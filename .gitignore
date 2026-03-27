@@ -1,0 +1,44 @@
+# virtual env
+.venv/
+venv/
+env/
+
+# python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# notebooks
+.ipynb_checkpoints/
+
+# env / secrets
+.env
+.env.*
+!.env.example
+
+# data
+data/raw/*
+!data/raw/.gitkeep
+
+# outputs / artifacts
+features/*.parquet
+predictions/*.parquet
+models/*
+!models/.gitkeep
+
+# mlflow local artifacts
+mlruns/
+mlartifacts/
+
+# logs
+*.log
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -6,7 +6,8 @@ import pandas as pd
 from src.paths import FEATURES_DIR, MODELS_DIR, PREDICTIONS_DIR
 
 
-MODEL_PATH = MODELS_DIR / "xgb_round1_baseline.joblib"
+ROUND1_MODEL_PATH = MODELS_DIR / "xgb_round1_baseline.joblib"
+ROUND2_MODEL_PATH = MODELS_DIR / "xgb_round2_baseline.joblib"
 FEATURES_PATH = FEATURES_DIR / "historical_features.parquet"
 
 PREDICTION_OUTPUT_PATH = PREDICTIONS_DIR / "leaderboard_predictions.parquet"
@@ -15,7 +16,7 @@ BACKTEST_OUTPUT_PATH = PREDICTIONS_DIR / "leaderboard_backtest.parquet"
 TARGET_TOURNAMENT = "Masters Tournament"
 TARGET_START_DATE = "2025-04-10"
 
-FEATURE_COLUMNS = [
+ROUND1_FEATURE_COLUMNS = [
     "season",
     "prev_tournament_avg_score",
     "prev_tournament_total",
@@ -28,6 +29,8 @@ FEATURE_COLUMNS = [
     "form_index_last_3",
     "career_tournament_count",
 ]
+
+ROUND2_FEATURE_COLUMNS = ROUND1_FEATURE_COLUMNS + ["round1"]
 
 
 def load_features() -> pd.DataFrame:
@@ -42,7 +45,8 @@ def load_features() -> pd.DataFrame:
         "tournament",
         "season",
         "round1",
-        *FEATURE_COLUMNS,
+        "round2",
+        *ROUND1_FEATURE_COLUMNS,
     }
     missing = required_columns - set(df.columns)
     if missing:
@@ -57,10 +61,10 @@ def load_features() -> pd.DataFrame:
     return df
 
 
-def load_model():
-    if not MODEL_PATH.exists():
-        raise FileNotFoundError(f"Model file not found: {MODEL_PATH}")
-    return joblib.load(MODEL_PATH)
+def load_model(model_path):
+    if not model_path.exists():
+        raise FileNotFoundError(f"Model file not found: {model_path}")
+    return joblib.load(model_path)
 
 
 def get_target_field(df: pd.DataFrame, tournament: str, start_date: str) -> pd.DataFrame:
@@ -120,7 +124,7 @@ def build_pre_tournament_feature_rows(
     inference_df = pd.concat(pre_tournament_rows, ignore_index=True)
 
     field_meta = field_df[
-        ["player_name_clean", "tournament", "start", "season", "round1"]
+        ["player_name_clean", "tournament", "start", "season", "round1", "round2"]
     ].copy()
 
     field_meta = field_meta.rename(
@@ -129,6 +133,7 @@ def build_pre_tournament_feature_rows(
             "start": "target_start",
             "season": "target_season",
             "round1": "actual_round1",
+            "round2": "actual_round2",
         }
     )
 
@@ -141,11 +146,11 @@ def build_pre_tournament_feature_rows(
 
     inference_df = inference_df.dropna(subset=["feature_source_start"]).copy()
 
-    missing_feature_cols = [col for col in FEATURE_COLUMNS if col not in inference_df.columns]
+    missing_feature_cols = [col for col in ROUND1_FEATURE_COLUMNS if col not in inference_df.columns]
     if missing_feature_cols:
         raise ValueError(f"Missing feature columns for inference: {missing_feature_cols}")
 
-    inference_df[FEATURE_COLUMNS] = inference_df[FEATURE_COLUMNS].fillna(0)
+    inference_df[ROUND1_FEATURE_COLUMNS] = inference_df[ROUND1_FEATURE_COLUMNS].fillna(0)
 
     if inference_df.empty:
         raise ValueError("All players were dropped because none had usable pre-tournament history.")
@@ -153,28 +158,73 @@ def build_pre_tournament_feature_rows(
     return inference_df
 
 
-def predict_round1(model, inference_df: pd.DataFrame) -> pd.DataFrame:
-    X = inference_df[FEATURE_COLUMNS].copy()
+def predict_round1(round1_model, inference_df: pd.DataFrame) -> pd.DataFrame:
+    X = inference_df[ROUND1_FEATURE_COLUMNS].copy()
 
     predictions = inference_df.copy()
-    predictions["predicted_round1"] = model.predict(X)
-    predictions["abs_error"] = (predictions["predicted_round1"] - predictions["actual_round1"]).abs()
+    predictions["predicted_round1"] = round1_model.predict(X)
+    predictions["abs_error_round1"] = (
+        predictions["predicted_round1"] - predictions["actual_round1"]
+    ).abs()
 
     predictions = predictions.sort_values(
         ["predicted_round1", "player_name_clean"],
         ascending=[True, True],
     ).reset_index(drop=True)
-    predictions["predicted_rank"] = predictions.index + 1
+    predictions["predicted_rank_round1"] = predictions.index + 1
 
     actual_rank_df = (
         predictions[["player_name_clean", "actual_round1"]]
         .sort_values(["actual_round1", "player_name_clean"], ascending=[True, True])
         .reset_index(drop=True)
     )
-    actual_rank_df["actual_rank"] = actual_rank_df.index + 1
+    actual_rank_df["actual_rank_round1"] = actual_rank_df.index + 1
 
     predictions = predictions.merge(
-        actual_rank_df[["player_name_clean", "actual_rank"]],
+        actual_rank_df[["player_name_clean", "actual_rank_round1"]],
+        on="player_name_clean",
+        how="left",
+    )
+
+    return predictions
+
+
+def predict_round2_backtest(round2_model, predictions_df: pd.DataFrame) -> pd.DataFrame:
+    predictions = predictions_df.copy()
+
+    predictions["round1"] = predictions["actual_round1"]
+
+    X = predictions[ROUND2_FEATURE_COLUMNS].copy()
+    predictions["predicted_round2"] = round2_model.predict(X)
+    predictions["abs_error_round2"] = (
+        predictions["predicted_round2"] - predictions["actual_round2"]
+    ).abs()
+
+    predictions["predicted_total_through_round2"] = (
+        predictions["predicted_round1"] + predictions["predicted_round2"]
+    )
+    predictions["actual_total_through_round2"] = (
+        predictions["actual_round1"] + predictions["actual_round2"]
+    )
+    predictions["abs_error_total_through_round2"] = (
+        predictions["predicted_total_through_round2"] - predictions["actual_total_through_round2"]
+    ).abs()
+
+    predictions = predictions.sort_values(
+        ["predicted_total_through_round2", "player_name_clean"],
+        ascending=[True, True],
+    ).reset_index(drop=True)
+    predictions["predicted_rank_through_round2"] = predictions.index + 1
+
+    actual_rank_df = (
+        predictions[["player_name_clean", "actual_total_through_round2"]]
+        .sort_values(["actual_total_through_round2", "player_name_clean"], ascending=[True, True])
+        .reset_index(drop=True)
+    )
+    actual_rank_df["actual_rank_through_round2"] = actual_rank_df.index + 1
+
+    predictions = predictions.merge(
+        actual_rank_df[["player_name_clean", "actual_rank_through_round2"]],
         on="player_name_clean",
         how="left",
     )
@@ -184,7 +234,8 @@ def predict_round1(model, inference_df: pd.DataFrame) -> pd.DataFrame:
 
 def build_prediction_output(predictions: pd.DataFrame) -> pd.DataFrame:
     output_columns = [
-        "predicted_rank",
+        "predicted_rank_round1",
+        "predicted_rank_through_round2",
         "player_name_clean",
         "target_tournament",
         "target_start",
@@ -203,14 +254,18 @@ def build_prediction_output(predictions: pd.DataFrame) -> pd.DataFrame:
         "form_index_last_3",
         "career_tournament_count",
         "predicted_round1",
+        "predicted_round2",
+        "predicted_total_through_round2",
     ]
     return predictions[output_columns].copy()
 
 
 def build_backtest_output(predictions: pd.DataFrame) -> pd.DataFrame:
     output_columns = [
-        "predicted_rank",
-        "actual_rank",
+        "predicted_rank_round1",
+        "actual_rank_round1",
+        "predicted_rank_through_round2",
+        "actual_rank_through_round2",
         "player_name_clean",
         "target_tournament",
         "target_start",
@@ -230,7 +285,13 @@ def build_backtest_output(predictions: pd.DataFrame) -> pd.DataFrame:
         "career_tournament_count",
         "predicted_round1",
         "actual_round1",
-        "abs_error",
+        "abs_error_round1",
+        "predicted_round2",
+        "actual_round2",
+        "abs_error_round2",
+        "predicted_total_through_round2",
+        "actual_total_through_round2",
+        "abs_error_total_through_round2",
     ]
     return predictions[output_columns].copy()
 
@@ -242,29 +303,73 @@ def save_outputs(prediction_df: pd.DataFrame, backtest_df: pd.DataFrame) -> None
 
 
 def print_event_summary(backtest_df: pd.DataFrame) -> None:
-    event_mae = backtest_df["abs_error"].mean()
-    event_rmse = ((backtest_df["predicted_round1"] - backtest_df["actual_round1"]) ** 2).mean() ** 0.5
+    event_mae_round1 = backtest_df["abs_error_round1"].mean()
+    event_rmse_round1 = (
+        ((backtest_df["predicted_round1"] - backtest_df["actual_round1"]) ** 2).mean() ** 0.5
+    )
+
+    event_mae_round2 = backtest_df["abs_error_round2"].mean()
+    event_rmse_round2 = (
+        ((backtest_df["predicted_round2"] - backtest_df["actual_round2"]) ** 2).mean() ** 0.5
+    )
+
+    event_mae_total_r2 = backtest_df["abs_error_total_through_round2"].mean()
+    event_rmse_total_r2 = (
+        (
+            (
+                backtest_df["predicted_total_through_round2"]
+                - backtest_df["actual_total_through_round2"]
+            ) ** 2
+        ).mean() ** 0.5
+    )
 
     print("\n=== EVENT BACKTEST SUMMARY ===")
     print(f"Tournament: {backtest_df['target_tournament'].iloc[0]}")
     print(f"Start date: {backtest_df['target_start'].iloc[0].date()}")
     print(f"Players evaluated: {len(backtest_df)}")
-    print(f"Event MAE:  {event_mae:.4f}")
-    print(f"Event RMSE: {event_rmse:.4f}")
 
-    print("\n=== TOP 10 PREDICTED ROUND 1 LEADERBOARD ===")
+    print("\nRound 1 metrics:")
+    print(f"MAE:  {event_mae_round1:.4f}")
+    print(f"RMSE: {event_rmse_round1:.4f}")
+
+    print("\nRound 2 metrics:")
+    print(f"MAE:  {event_mae_round2:.4f}")
+    print(f"RMSE: {event_rmse_round2:.4f}")
+
+    print("\nTotal through Round 2 metrics:")
+    print(f"MAE:  {event_mae_total_r2:.4f}")
+    print(f"RMSE: {event_rmse_total_r2:.4f}")
+
+    print("\n=== TOP 10 PREDICTED LEADERBOARD THROUGH ROUND 2 ===")
     print(
         backtest_df[
-            ["predicted_rank", "player_name_clean", "predicted_round1", "actual_round1", "actual_rank", "abs_error"]
+            [
+                "predicted_rank_through_round2",
+                "player_name_clean",
+                "predicted_round1",
+                "actual_round1",
+                "predicted_round2",
+                "actual_round2",
+                "predicted_total_through_round2",
+                "actual_total_through_round2",
+                "actual_rank_through_round2",
+            ]
         ]
         .head(10)
         .to_string(index=False)
     )
 
-    print("\n=== TOP 10 ACTUAL ROUND 1 LEADERBOARD ===")
+    print("\n=== TOP 10 ACTUAL LEADERBOARD THROUGH ROUND 2 ===")
     print(
-        backtest_df.sort_values(["actual_rank", "player_name_clean"])[
-            ["actual_rank", "player_name_clean", "actual_round1", "predicted_round1", "predicted_rank", "abs_error"]
+        backtest_df.sort_values(["actual_rank_through_round2", "player_name_clean"])[
+            [
+                "actual_rank_through_round2",
+                "player_name_clean",
+                "actual_total_through_round2",
+                "predicted_total_through_round2",
+                "predicted_rank_through_round2",
+                "abs_error_total_through_round2",
+            ]
         ]
         .head(10)
         .to_string(index=False)
@@ -286,14 +391,18 @@ def main() -> None:
 
     print(f"Players with usable history: {len(inference_df)}")
 
-    print("Loading model...")
-    model = load_model()
+    print("Loading models...")
+    round1_model = load_model(ROUND1_MODEL_PATH)
+    round2_model = load_model(ROUND2_MODEL_PATH)
 
-    print("Running predictions...")
-    full_predictions_df = predict_round1(model, inference_df)
+    print("Running Round 1 predictions...")
+    predictions_df = predict_round1(round1_model, inference_df)
 
-    prediction_output_df = build_prediction_output(full_predictions_df)
-    backtest_output_df = build_backtest_output(full_predictions_df)
+    print("Running Round 2 backtest predictions...")
+    predictions_df = predict_round2_backtest(round2_model, predictions_df)
+
+    prediction_output_df = build_prediction_output(predictions_df)
+    backtest_output_df = build_backtest_output(predictions_df)
 
     print(f"Saving prediction artifact to: {PREDICTION_OUTPUT_PATH}")
     print(f"Saving backtest artifact to:   {BACKTEST_OUTPUT_PATH}")

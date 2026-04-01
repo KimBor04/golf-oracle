@@ -11,7 +11,36 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 FEATURES_PATH = PROJECT_ROOT / "features" / "historical_features.parquet"
 MODELS_DIR = PROJECT_ROOT / "models"
-MODEL_PATH = MODELS_DIR / "xgb_round1_baseline.joblib"
+
+ROUND1_MODEL_PATH = MODELS_DIR / "xgb_round1_baseline.joblib"
+ROUND2_MODEL_PATH = MODELS_DIR / "xgb_round2_baseline.joblib"
+
+BASE_FEATURE_COLUMNS = [
+    "season",
+    "prev_tournament_avg_score",
+    "prev_tournament_total",
+    "prev_tournament_made_cut",
+    "prev_tournament_earnings",
+    "rolling_avg_last_3",
+    "rolling_avg_last_5",
+    "rolling_total_last_3",
+    "made_cut_rate_last_5",
+    "form_index_last_3",
+    "career_tournament_count",
+]
+
+ROUND_FEATURE_CONFIG = {
+    "round1": {
+        "target_col": "round1",
+        "feature_cols": BASE_FEATURE_COLUMNS,
+        "model_path": ROUND1_MODEL_PATH,
+    },
+    "round2": {
+        "target_col": "round2",
+        "feature_cols": BASE_FEATURE_COLUMNS + ["round1"],
+        "model_path": ROUND2_MODEL_PATH,
+    },
+}
 
 
 def ensure_directories() -> None:
@@ -24,49 +53,51 @@ def load_data() -> pd.DataFrame:
     return df
 
 
-def prepare_training_data(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
-    keep_cols = [
-        "season",
-        "round1",
+def prepare_training_data(
+    df: pd.DataFrame,
+    round_name: str,
+) -> tuple[pd.DataFrame, pd.Series, pd.DataFrame]:
+    if round_name not in ROUND_FEATURE_CONFIG:
+        raise ValueError(f"Unsupported round_name: {round_name}")
+
+    config = ROUND_FEATURE_CONFIG[round_name]
+    target_col = config["target_col"]
+    feature_cols = config["feature_cols"]
+
+    required_cols = {
         "start",
         "tournament",
         "name",
         "player_name_clean",
-        "prev_tournament_avg_score",
-        "prev_tournament_total",
-        "prev_tournament_made_cut",
-        "prev_tournament_earnings",
-        "rolling_avg_last_3",
-        "rolling_avg_last_5",
-        "rolling_total_last_3",
-        "made_cut_rate_last_5",
-        "form_index_last_3",
-        "career_tournament_count",
+        target_col,
+        *feature_cols,
+    }
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing required columns for {round_name}: {sorted(missing)}")
+
+    keep_cols = [
+        "start",
+        "tournament",
+        "name",
+        "player_name_clean",
+        target_col,
+        *feature_cols,
     ]
 
     df = df[keep_cols].copy()
 
-    df["round1"] = pd.to_numeric(df["round1"], errors="coerce")
-    df = df[df["round1"].notna()].copy()
-    df = df[df["prev_tournament_avg_score"].notna()].copy()
+    df[target_col] = pd.to_numeric(df[target_col], errors="coerce")
+    df = df[df[target_col].notna()].copy()
 
-    feature_cols = [
-        "season",
-        "prev_tournament_avg_score",
-        "prev_tournament_total",
-        "prev_tournament_made_cut",
-        "prev_tournament_earnings",
-        "rolling_avg_last_3",
-        "rolling_avg_last_5",
-        "rolling_total_last_3",
-        "made_cut_rate_last_5",
-        "form_index_last_3",
-        "career_tournament_count",
-    ]
+    for col in feature_cols:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    df = df.dropna(subset=feature_cols).copy()
 
     X = df[feature_cols].copy()
-    y = df["round1"].copy()
-    meta = df[["start", "tournament", "name", "player_name_clean", "round1"]].copy()
+    y = df[target_col].copy()
+    meta = df[["start", "tournament", "name", "player_name_clean", target_col]].copy()
 
     return X, y, meta
 
@@ -124,12 +155,13 @@ def evaluate_model(model: XGBRegressor, X_test: pd.DataFrame, y_test: pd.Series)
 
 
 def print_summary(
+    round_name: str,
     X_train: pd.DataFrame,
     X_test: pd.DataFrame,
     meta_test: pd.DataFrame,
     results: dict,
 ) -> None:
-    print("\n=== TRAINING SUMMARY ===")
+    print(f"\n=== TRAINING SUMMARY ({round_name.upper()}) ===")
     print("Train rows:", len(X_train))
     print("Test rows:", len(X_test))
     print("Features:", X_train.columns.tolist())
@@ -142,25 +174,35 @@ def print_summary(
     print(f"RMSE: {results['rmse']:.4f}")
 
     preview = meta_test.copy()
-    preview["prediction_round1"] = results["predictions"]
+    preview[f"prediction_{round_name}"] = results["predictions"]
     print("\nSample predictions:")
     print(preview.head(10))
 
 
-def main() -> None:
-    ensure_directories()
+def run_training_for_round(round_name: str) -> None:
+    if round_name not in ROUND_FEATURE_CONFIG:
+        raise ValueError(f"Unsupported round_name: {round_name}")
+
+    model_path = ROUND_FEATURE_CONFIG[round_name]["model_path"]
 
     df = load_data()
-    X, y, meta = prepare_training_data(df)
+    X, y, meta = prepare_training_data(df, round_name)
     X_train, X_test, y_train, y_test, meta_train, meta_test = time_split(X, y, meta)
 
     model = train_model(X_train, y_train)
     results = evaluate_model(model, X_test, y_test)
 
-    print_summary(X_train, X_test, meta_test, results)
+    print_summary(round_name, X_train, X_test, meta_test, results)
 
-    joblib.dump(model, MODEL_PATH)
-    print(f"\nSaved model to: {MODEL_PATH}")
+    joblib.dump(model, model_path)
+    print(f"\nSaved model to: {model_path}")
+
+
+def main() -> None:
+    ensure_directories()
+
+    run_training_for_round("round1")
+    run_training_for_round("round2")
 
 
 if __name__ == "__main__":

@@ -3,6 +3,8 @@ import pytest
 
 from pipelines.inference_pipeline import (
     FEATURE_COLUMNS,
+    build_backtest_output,
+    build_prediction_output,
     build_pre_tournament_feature_rows,
     get_target_field,
     predict_round1,
@@ -122,7 +124,7 @@ def test_build_pre_tournament_feature_rows_uses_latest_history_row(
     assert alice_row["feature_source_season"] == 2025
 
 
-def test_predict_round1_adds_expected_columns_and_ranks(sample_inference_df: pd.DataFrame) -> None:
+def test_predict_round1_adds_prediction_columns_and_ranks(sample_inference_df: pd.DataFrame) -> None:
     field_df = get_target_field(sample_inference_df, "Masters Tournament", "2025-04-10")
     inference_df = build_pre_tournament_feature_rows(
         sample_inference_df,
@@ -132,6 +134,88 @@ def test_predict_round1_adds_expected_columns_and_ranks(sample_inference_df: pd.
 
     model = DummyModel()
     predictions_df = predict_round1(model, inference_df)
+
+    required_columns = {
+        "player_name_clean",
+        "target_tournament",
+        "target_start",
+        "target_season",
+        "feature_source_season",
+        "feature_source_start",
+        "feature_source_tournament",
+        "predicted_round1",
+        "actual_round1",
+        "abs_error",
+        "predicted_rank",
+        "actual_rank",
+        *FEATURE_COLUMNS,
+    }
+
+    assert required_columns.issubset(predictions_df.columns)
+    assert len(predictions_df) == 2
+
+    # bob should rank ahead of alice because 68.5 < 70.5
+    assert predictions_df.iloc[0]["player_name_clean"] == "bob"
+    assert predictions_df.iloc[0]["predicted_rank"] == 1
+    assert predictions_df.iloc[1]["player_name_clean"] == "alice"
+    assert predictions_df.iloc[1]["predicted_rank"] == 2
+
+    bob_row = predictions_df[predictions_df["player_name_clean"] == "bob"].iloc[0]
+    alice_row = predictions_df[predictions_df["player_name_clean"] == "alice"].iloc[0]
+
+    assert bob_row["actual_rank"] == 1
+    assert alice_row["actual_rank"] == 2
+
+
+def test_build_prediction_output_returns_expected_columns(sample_inference_df: pd.DataFrame) -> None:
+    field_df = get_target_field(sample_inference_df, "Masters Tournament", "2025-04-10")
+    inference_df = build_pre_tournament_feature_rows(
+        sample_inference_df,
+        field_df,
+        pd.Timestamp("2025-04-10"),
+    )
+
+    model = DummyModel()
+    predictions_df = predict_round1(model, inference_df)
+    prediction_output_df = build_prediction_output(predictions_df)
+
+    expected_columns = [
+        "predicted_rank",
+        "player_name_clean",
+        "target_tournament",
+        "target_start",
+        "target_season",
+        "feature_source_season",
+        "feature_source_start",
+        "feature_source_tournament",
+        "prev_tournament_avg_score",
+        "prev_tournament_total",
+        "prev_tournament_made_cut",
+        "prev_tournament_earnings",
+        "rolling_avg_last_3",
+        "rolling_avg_last_5",
+        "rolling_total_last_3",
+        "made_cut_rate_last_5",
+        "form_index_last_3",
+        "career_tournament_count",
+        "predicted_round1",
+    ]
+
+    assert prediction_output_df.columns.tolist() == expected_columns
+    assert len(prediction_output_df) == 2
+
+
+def test_build_backtest_output_returns_expected_columns(sample_inference_df: pd.DataFrame) -> None:
+    field_df = get_target_field(sample_inference_df, "Masters Tournament", "2025-04-10")
+    inference_df = build_pre_tournament_feature_rows(
+        sample_inference_df,
+        field_df,
+        pd.Timestamp("2025-04-10"),
+    )
+
+    model = DummyModel()
+    predictions_df = predict_round1(model, inference_df)
+    backtest_output_df = build_backtest_output(predictions_df)
 
     expected_columns = [
         "predicted_rank",
@@ -144,30 +228,22 @@ def test_predict_round1_adds_expected_columns_and_ranks(sample_inference_df: pd.
         "feature_source_start",
         "feature_source_tournament",
         "prev_tournament_avg_score",
+        "prev_tournament_total",
+        "prev_tournament_made_cut",
+        "prev_tournament_earnings",
         "rolling_avg_last_3",
         "rolling_avg_last_5",
+        "rolling_total_last_3",
         "made_cut_rate_last_5",
+        "form_index_last_3",
         "career_tournament_count",
         "predicted_round1",
         "actual_round1",
         "abs_error",
     ]
 
-    assert predictions_df.columns.tolist() == expected_columns
-    assert len(predictions_df) == 2
-
-    # bob should rank ahead of alice because 68.5 < 70.5
-    assert predictions_df.iloc[0]["player_name_clean"] == "bob"
-    assert predictions_df.iloc[0]["predicted_rank"] == 1
-    assert predictions_df.iloc[1]["player_name_clean"] == "alice"
-    assert predictions_df.iloc[1]["predicted_rank"] == 2
-
-    # actual ranking also based on actual_round1 ascending
-    bob_row = predictions_df[predictions_df["player_name_clean"] == "bob"].iloc[0]
-    alice_row = predictions_df[predictions_df["player_name_clean"] == "alice"].iloc[0]
-
-    assert bob_row["actual_rank"] == 1
-    assert alice_row["actual_rank"] == 2
+    assert backtest_output_df.columns.tolist() == expected_columns
+    assert len(backtest_output_df) == 2
 
 
 def test_build_pre_tournament_feature_rows_contains_required_feature_columns(

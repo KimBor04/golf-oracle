@@ -24,10 +24,14 @@ __pycache__/
 data/raw/*
 !data/raw/.gitkeep
 
-# outputs / artifacts
+# generated features / predictions
 features/*.parquet
 predictions/*.parquet
-models/*
+
+# model artifacts
+models/*.joblib
+models/*.pkl
+models/*.bin
 !models/.gitkeep
 
 # mlflow local artifacts

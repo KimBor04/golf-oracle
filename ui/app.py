@@ -11,7 +11,8 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.paths import PREDICTIONS_DIR
 
-PREDICTIONS_PATH = PREDICTIONS_DIR / "leaderboard.parquet"
+PREDICTION_PATH = PREDICTIONS_DIR / "leaderboard_predictions.parquet"
+BACKTEST_PATH = PREDICTIONS_DIR / "leaderboard_backtest.parquet"
 
 
 st.set_page_config(
@@ -22,14 +23,33 @@ st.set_page_config(
 
 
 @st.cache_data
-def load_predictions() -> pd.DataFrame:
-    if not PREDICTIONS_PATH.exists():
-        raise FileNotFoundError(f"Prediction file not found: {PREDICTIONS_PATH}")
+def load_prediction_df() -> pd.DataFrame:
+    if not PREDICTION_PATH.exists():
+        raise FileNotFoundError(f"Prediction file not found: {PREDICTION_PATH}")
 
-    df = pd.read_parquet(PREDICTIONS_PATH)
+    df = pd.read_parquet(PREDICTION_PATH)
 
     if "target_start" in df.columns:
         df["target_start"] = pd.to_datetime(df["target_start"], errors="coerce")
+
+    if "feature_source_start" in df.columns:
+        df["feature_source_start"] = pd.to_datetime(df["feature_source_start"], errors="coerce")
+
+    return df
+
+
+@st.cache_data
+def load_backtest_df() -> pd.DataFrame:
+    if not BACKTEST_PATH.exists():
+        raise FileNotFoundError(f"Backtest file not found: {BACKTEST_PATH}")
+
+    df = pd.read_parquet(BACKTEST_PATH)
+
+    if "target_start" in df.columns:
+        df["target_start"] = pd.to_datetime(df["target_start"], errors="coerce")
+
+    if "feature_source_start" in df.columns:
+        df["feature_source_start"] = pd.to_datetime(df["feature_source_start"], errors="coerce")
 
     return df
 
@@ -47,30 +67,44 @@ def format_metrics(df: pd.DataFrame) -> tuple[float, float, int]:
 
 def main() -> None:
     st.title("🏌️ Golf Oracle")
-    st.subheader("Round 1 tournament backtest")
+    st.subheader("Round 1 leaderboard and backtest")
 
     try:
-        df = load_predictions()
+        prediction_df = load_prediction_df()
     except Exception as e:
-        st.error(f"Could not load predictions: {e}")
+        st.error(f"Could not load prediction artifact: {e}")
         st.stop()
 
-    if df.empty:
-        st.warning("The prediction file is empty.")
+    if prediction_df.empty:
+        st.warning("The prediction artifact is empty.")
         st.stop()
 
-    tournament_name = df["target_tournament"].iloc[0] if "target_tournament" in df.columns else "Unknown Tournament"
-    target_start = df["target_start"].iloc[0] if "target_start" in df.columns else None
+    backtest_df = None
+    backtest_error = None
+    try:
+        backtest_df = load_backtest_df()
+    except Exception as e:
+        backtest_error = str(e)
+
+    tournament_name = (
+        prediction_df["target_tournament"].iloc[0]
+        if "target_tournament" in prediction_df.columns
+        else "Unknown Tournament"
+    )
+    target_start = prediction_df["target_start"].iloc[0] if "target_start" in prediction_df.columns else None
 
     if pd.notna(target_start):
         st.caption(f"{tournament_name} — {target_start.date()}")
     else:
         st.caption(tournament_name)
 
-    mae, rmse, n_players = format_metrics(df)
+    if backtest_df is not None and not backtest_df.empty:
+        mae, rmse, n_players = format_metrics(backtest_df)
+    else:
+        mae, rmse, n_players = float("nan"), float("nan"), len(prediction_df)
 
     col1, col2, col3 = st.columns(3)
-    col1.metric("Players evaluated", f"{n_players}")
+    col1.metric("Players", f"{n_players}")
     col2.metric("Event MAE", f"{mae:.3f}" if pd.notna(mae) else "N/A")
     col3.metric("Event RMSE", f"{rmse:.3f}" if pd.notna(rmse) else "N/A")
 
@@ -79,54 +113,76 @@ def main() -> None:
     player_search = st.text_input("Search player", "")
     show_top_n = st.slider("Show top N rows", min_value=5, max_value=50, value=20, step=5)
 
-    filtered_df = df.copy()
+    filtered_prediction_df = prediction_df.copy()
+    filtered_backtest_df = backtest_df.copy() if backtest_df is not None else None
 
     if player_search.strip():
-        filtered_df = filtered_df[
-            filtered_df["player_name_clean"].str.contains(player_search, case=False, na=False)
+        filtered_prediction_df = filtered_prediction_df[
+            filtered_prediction_df["player_name_clean"].str.contains(player_search, case=False, na=False)
         ].copy()
+
+        if filtered_backtest_df is not None:
+            filtered_backtest_df = filtered_backtest_df[
+                filtered_backtest_df["player_name_clean"].str.contains(player_search, case=False, na=False)
+            ].copy()
 
     st.markdown("### Predicted leaderboard")
 
     predicted_cols = [
         "predicted_rank",
-        "actual_rank",
         "player_name_clean",
         "predicted_round1",
-        "actual_round1",
-        "abs_error",
+        "feature_source_tournament",
+        "feature_source_start",
+        "rolling_avg_last_3",
+        "rolling_avg_last_5",
+        "made_cut_rate_last_5",
+        "career_tournament_count",
     ]
-    predicted_cols = [col for col in predicted_cols if col in filtered_df.columns]
+    predicted_cols = [col for col in predicted_cols if col in filtered_prediction_df.columns]
 
     st.dataframe(
-        filtered_df[predicted_cols].head(show_top_n),
+        filtered_prediction_df[predicted_cols].head(show_top_n),
         use_container_width=True,
         hide_index=True,
     )
 
+    st.markdown("### Prediction artifact")
+    st.dataframe(filtered_prediction_df, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+    st.markdown("## Backtest view")
+
+    if backtest_error:
+        st.info(f"Backtest artifact not available: {backtest_error}")
+        return
+
+    if filtered_backtest_df is None or filtered_backtest_df.empty:
+        st.warning("Backtest artifact is empty.")
+        return
+
     st.markdown("### Actual leaderboard")
 
-    if "actual_rank" in filtered_df.columns:
-        actual_df = filtered_df.sort_values(["actual_rank", "player_name_clean"]).copy()
+    actual_df = filtered_backtest_df.sort_values(["actual_rank", "player_name_clean"]).copy()
 
-        actual_cols = [
-            "actual_rank",
-            "predicted_rank",
-            "player_name_clean",
-            "actual_round1",
-            "predicted_round1",
-            "abs_error",
-        ]
-        actual_cols = [col for col in actual_cols if col in actual_df.columns]
+    actual_cols = [
+        "actual_rank",
+        "predicted_rank",
+        "player_name_clean",
+        "actual_round1",
+        "predicted_round1",
+        "abs_error",
+    ]
+    actual_cols = [col for col in actual_cols if col in actual_df.columns]
 
-        st.dataframe(
-            actual_df[actual_cols].head(show_top_n),
-            use_container_width=True,
-            hide_index=True,
-        )
+    st.dataframe(
+        actual_df[actual_cols].head(show_top_n),
+        use_container_width=True,
+        hide_index=True,
+    )
 
     st.markdown("### Full backtest table")
-    st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+    st.dataframe(filtered_backtest_df, use_container_width=True, hide_index=True)
 
 
 if __name__ == "__main__":

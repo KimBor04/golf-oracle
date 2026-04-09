@@ -102,7 +102,7 @@ def format_metrics(df: pd.DataFrame) -> dict[str, float | int]:
 
 def main() -> None:
     st.title("🏌️ Golf Oracle")
-    st.subheader("Round 2 leaderboard and backtest")
+    st.subheader("Round 1 prediction and Round 2 backtest")
 
     try:
         prediction_df = load_prediction_df()
@@ -189,15 +189,12 @@ def main() -> None:
                 filtered_backtest_df["player_name_clean"].str.contains(player_search, case=False, na=False)
             ].copy()
 
-    st.markdown("### Predicted leaderboard through Round 2")
+    st.markdown("### Predicted leaderboard for Round 1")
 
     predicted_cols = [
-        "predicted_rank_through_round2",
         "predicted_rank_round1",
         "player_name_clean",
         "predicted_round1",
-        "predicted_round2",
-        "predicted_total_through_round2",
         "feature_source_tournament",
         "feature_source_start",
         "rolling_avg_last_3",

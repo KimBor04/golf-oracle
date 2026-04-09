@@ -233,7 +233,6 @@ def test_build_prediction_output_returns_expected_columns(sample_inference_df: p
 
     expected_columns = [
         "predicted_rank_round1",
-        "predicted_rank_through_round2",
         "player_name_clean",
         "target_tournament",
         "target_start",
@@ -252,8 +251,6 @@ def test_build_prediction_output_returns_expected_columns(sample_inference_df: p
         "form_index_last_3",
         "career_tournament_count",
         "predicted_round1",
-        "predicted_round2",
-        "predicted_total_through_round2",
     ]
 
     assert prediction_output_df.columns.tolist() == expected_columns

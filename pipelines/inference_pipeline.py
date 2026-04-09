@@ -240,7 +240,6 @@ def predict_round2_backtest(round2_model, predictions_df: pd.DataFrame) -> pd.Da
 def build_prediction_output(predictions: pd.DataFrame) -> pd.DataFrame:
     output_columns = [
         "predicted_rank_round1",
-        "predicted_rank_through_round2",
         "player_name_clean",
         "target_tournament",
         "target_start",
@@ -259,8 +258,6 @@ def build_prediction_output(predictions: pd.DataFrame) -> pd.DataFrame:
         "form_index_last_3",
         "career_tournament_count",
         "predicted_round1",
-        "predicted_round2",
-        "predicted_total_through_round2",
     ]
     return predictions[output_columns].copy()
 

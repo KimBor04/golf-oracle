@@ -5,8 +5,8 @@ from pipelines.training_pipeline import (
     BASE_FEATURE_COLUMNS,
     prepare_training_data,
     time_split,
+    ROUND_FEATURE_CONFIG,
 )
-
 
 def make_sample_training_df() -> pd.DataFrame:
     return pd.DataFrame(
@@ -144,3 +144,35 @@ def test_time_split_sorts_even_if_input_is_unsorted() -> None:
 
     combined_dates = meta_train["start"].tolist() + meta_test["start"].tolist()
     assert combined_dates == sorted(combined_dates)
+
+def test_prepare_training_data_round2_matches_configured_feature_columns() -> None:
+    df = make_sample_training_df()
+
+    X, _, _ = prepare_training_data(df, "round2")
+
+    assert X.columns.tolist() == ROUND_FEATURE_CONFIG["round2"]["feature_cols"]
+
+def test_prepare_training_data_round1_does_not_include_round1_as_feature() -> None:
+    df = make_sample_training_df()
+
+    X, _, _ = prepare_training_data(df, "round1")
+
+    assert "round1" not in X.columns
+
+def test_time_split_raises_for_invalid_test_size() -> None:
+    df = make_sample_training_df()
+    X, y, meta = prepare_training_data(df, "round1")
+
+    with pytest.raises(ValueError, match="test_size must be between 0 and 1"):
+        time_split(X, y, meta, test_size=0)
+
+    with pytest.raises(ValueError, match="test_size must be between 0 and 1"):
+        time_split(X, y, meta, test_size=1)
+
+def test_time_split_raises_when_split_would_create_empty_partition() -> None:
+    df = make_sample_training_df().head(1).copy()
+
+    X, y, meta = prepare_training_data(df, "round1")
+
+    with pytest.raises(ValueError, match="Invalid split_idx"):
+        time_split(X, y, meta, test_size=0.2)

@@ -6,11 +6,12 @@ import pandas as pd
 from xgboost import XGBRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 
+from src.paths import (
+    HISTORICAL_FEATURES_PATH,
+    MODELS_DIR,
+)
 
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-
-FEATURES_PATH = PROJECT_ROOT / "features" / "historical_features.parquet"
-MODELS_DIR = PROJECT_ROOT / "models"
+FEATURES_PATH = HISTORICAL_FEATURES_PATH
 
 ROUND1_MODEL_PATH = MODELS_DIR / "xgb_round1_baseline.joblib"
 ROUND2_MODEL_PATH = MODELS_DIR / "xgb_round2_baseline.joblib"
@@ -48,10 +49,16 @@ def ensure_directories() -> None:
 
 
 def load_data() -> pd.DataFrame:
+    if not FEATURES_PATH.exists():
+        raise FileNotFoundError(f"Feature file not found: {FEATURES_PATH}")
+
     df = pd.read_parquet(FEATURES_PATH)
     df["start"] = pd.to_datetime(df["start"], errors="coerce")
-    return df
 
+    if df["start"].isna().any():
+        raise ValueError("Some 'start' values could not be parsed as datetimes.")
+
+    return df
 
 def prepare_training_data(
     df: pd.DataFrame,
@@ -101,13 +108,18 @@ def prepare_training_data(
 
     return X, y, meta
 
-
 def time_split(
     X: pd.DataFrame,
     y: pd.Series,
     meta: pd.DataFrame,
     test_size: float = 0.2,
 ):
+    if not 0 < test_size < 1:
+        raise ValueError(f"test_size must be between 0 and 1, got {test_size}")
+
+    if len(X) == 0:
+        raise ValueError("Cannot split empty training data.")
+
     order = np.argsort(meta["start"].values)
 
     X = X.iloc[order].reset_index(drop=True)
@@ -115,6 +127,12 @@ def time_split(
     meta = meta.iloc[order].reset_index(drop=True)
 
     split_idx = int(len(X) * (1 - test_size))
+
+    if split_idx <= 0 or split_idx >= len(X):
+        raise ValueError(
+            f"Invalid split_idx={split_idx} for {len(X)} rows. "
+            "Adjust test_size or provide more data."
+        )
 
     X_train = X.iloc[:split_idx].copy()
     y_train = y.iloc[:split_idx].copy()

@@ -16,4 +16,6 @@ UI_DIR = PROJECT_ROOT / "ui"
 
 HISTORICAL_FEATURES_PATH = FEATURES_DIR / "historical_features.parquet"
 LIVE_FEATURES_PATH = FEATURES_DIR / "live_features.parquet"
-LEADERBOARD_PATH = PREDICTIONS_DIR / "leaderboard.parquet"
+
+LEADERBOARD_PREDICTIONS_PATH = PREDICTIONS_DIR / "leaderboard_predictions.parquet"
+LEADERBOARD_BACKTEST_PATH = PREDICTIONS_DIR / "leaderboard_backtest.parquet"

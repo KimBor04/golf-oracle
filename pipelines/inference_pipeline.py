@@ -3,15 +3,20 @@ from __future__ import annotations
 import joblib
 import pandas as pd
 
-from src.paths import FEATURES_DIR, MODELS_DIR, PREDICTIONS_DIR
-
+from src.paths import (
+    FEATURES_DIR,
+    MODELS_DIR,
+    PREDICTIONS_DIR,
+    LEADERBOARD_PREDICTIONS_PATH,
+    LEADERBOARD_BACKTEST_PATH,
+)
 
 ROUND1_MODEL_PATH = MODELS_DIR / "xgb_round1_baseline.joblib"
 ROUND2_MODEL_PATH = MODELS_DIR / "xgb_round2_baseline.joblib"
 FEATURES_PATH = FEATURES_DIR / "historical_features.parquet"
 
-PREDICTION_OUTPUT_PATH = PREDICTIONS_DIR / "leaderboard_predictions.parquet"
-BACKTEST_OUTPUT_PATH = PREDICTIONS_DIR / "leaderboard_backtest.parquet"
+PREDICTION_OUTPUT_PATH = LEADERBOARD_PREDICTIONS_PATH
+BACKTEST_OUTPUT_PATH = LEADERBOARD_BACKTEST_PATH
 
 TARGET_TOURNAMENT = "Masters Tournament"
 TARGET_START_DATE = "2025-04-10"

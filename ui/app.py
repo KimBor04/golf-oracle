@@ -9,10 +9,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.append(str(PROJECT_ROOT))
 
-from src.paths import PREDICTIONS_DIR
+from src.paths import (
+    LEADERBOARD_PREDICTIONS_PATH,
+    LEADERBOARD_BACKTEST_PATH,
+)
 
-PREDICTION_PATH = PREDICTIONS_DIR / "leaderboard_predictions.parquet"
-BACKTEST_PATH = PREDICTIONS_DIR / "leaderboard_backtest.parquet"
+PREDICTION_PATH = LEADERBOARD_PREDICTIONS_PATH
+BACKTEST_PATH = LEADERBOARD_BACKTEST_PATH
 
 
 st.set_page_config(

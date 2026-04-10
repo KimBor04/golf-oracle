@@ -48,3 +48,6 @@ mlartifacts/
 Thumbs.db
 .vscode/
 .idea/
+
+mlruns/
+mlflow.db

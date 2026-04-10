@@ -1,6 +1,8 @@
 from pathlib import Path
 import joblib
 
+import mlflow
+import mlflow.sklearn
 import numpy as np
 import pandas as pd
 from xgboost import XGBRegressor
@@ -15,6 +17,8 @@ FEATURES_PATH = HISTORICAL_FEATURES_PATH
 
 ROUND1_MODEL_PATH = MODELS_DIR / "xgb_round1_baseline.joblib"
 ROUND2_MODEL_PATH = MODELS_DIR / "xgb_round2_baseline.joblib"
+
+MLFLOW_EXPERIMENT_NAME = "golf-oracle-baselines"
 
 BASE_FEATURE_COLUMNS = [
     "season",
@@ -59,6 +63,7 @@ def load_data() -> pd.DataFrame:
         raise ValueError("Some 'start' values could not be parsed as datetimes.")
 
     return df
+
 
 def prepare_training_data(
     df: pd.DataFrame,
@@ -107,6 +112,7 @@ def prepare_training_data(
     meta = df[["start", "tournament", "name", "player_name_clean", target_col]].copy()
 
     return X, y, meta
+
 
 def time_split(
     X: pd.DataFrame,
@@ -166,10 +172,48 @@ def evaluate_model(model: XGBRegressor, X_test: pd.DataFrame, y_test: pd.Series)
     rmse = mean_squared_error(y_test, preds) ** 0.5
 
     return {
-        "mae": mae,
-        "rmse": rmse,
+        "mae": float(mae),
+        "rmse": float(rmse),
         "predictions": preds,
     }
+
+
+def log_run_to_mlflow(
+    round_name: str,
+    model: XGBRegressor,
+    X_train: pd.DataFrame,
+    X_test: pd.DataFrame,
+    meta_train: pd.DataFrame,
+    meta_test: pd.DataFrame,
+    results: dict,
+    model_path: Path,
+) -> None:
+    mlflow.set_experiment(MLFLOW_EXPERIMENT_NAME)
+
+    with mlflow.start_run(run_name=f"{round_name}_baseline"):
+        mlflow.log_param("round_name", round_name)
+        mlflow.log_param("model_type", "XGBRegressor")
+        mlflow.log_param("target_col", ROUND_FEATURE_CONFIG[round_name]["target_col"])
+        mlflow.log_param("n_features", len(X_train.columns))
+        mlflow.log_param("feature_columns", ",".join(X_train.columns.tolist()))
+        mlflow.log_param("train_rows", len(X_train))
+        mlflow.log_param("test_rows", len(X_test))
+        mlflow.log_param("train_start_min", str(meta_train["start"].min()))
+        mlflow.log_param("train_start_max", str(meta_train["start"].max()))
+        mlflow.log_param("test_start_min", str(meta_test["start"].min()))
+        mlflow.log_param("test_start_max", str(meta_test["start"].max()))
+
+        mlflow.log_metric("mae", results["mae"])
+        mlflow.log_metric("rmse", results["rmse"])
+
+        mlflow.log_artifact(str(model_path))
+
+        input_example = X_test.head(5).astype(float)
+        mlflow.sklearn.log_model(
+            sk_model=model,
+            name="model",
+            input_example=input_example,
+        )
 
 
 def print_summary(
@@ -214,6 +258,18 @@ def run_training_for_round(round_name: str) -> None:
 
     joblib.dump(model, model_path)
     print(f"\nSaved model to: {model_path}")
+
+    log_run_to_mlflow(
+        round_name=round_name,
+        model=model,
+        X_train=X_train,
+        X_test=X_test,
+        meta_train=meta_train,
+        meta_test=meta_test,
+        results=results,
+        model_path=model_path,
+    )
+    print(f"Logged MLflow run for: {round_name}")
 
 
 def main() -> None:

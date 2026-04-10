@@ -50,3 +50,13 @@ python pipelines/inference_pipeline.py
 streamlit run ui/app.py
 ```
 
+## MLflow Tracking
+
+Run training:
+python -m pipelines.training_pipeline
+
+Start UI:
+mlflow ui
+
+Open:
+http://127.0.0.1:5000

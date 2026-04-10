@@ -102,7 +102,7 @@ def format_metrics(df: pd.DataFrame) -> dict[str, float | int]:
 
 def main() -> None:
     st.title("🏌️ Golf Oracle")
-    st.subheader("Round 1 prediction and Round 2 backtest")
+    st.subheader("Round 1 + Round 2 prediction with separate backtest evaluation")
 
     try:
         prediction_df = load_prediction_df()
@@ -132,6 +132,18 @@ def main() -> None:
         st.caption(f"{tournament_name} — {target_start.date()}")
     else:
         st.caption(tournament_name)
+
+    inference_mode = (
+        prediction_df["inference_mode"].iloc[0]
+        if "inference_mode" in prediction_df.columns
+        else "unknown"
+    )
+    round1_input_source = (
+        prediction_df["round1_input_source"].iloc[0]
+        if "round1_input_source" in prediction_df.columns
+        else "unknown"
+    )
+    st.caption(f"Prediction mode: {inference_mode} | Round 2 input: {round1_input_source}")
 
     if backtest_df is not None and not backtest_df.empty:
         metrics = format_metrics(backtest_df)
@@ -189,12 +201,15 @@ def main() -> None:
                 filtered_backtest_df["player_name_clean"].str.contains(player_search, case=False, na=False)
             ].copy()
 
-    st.markdown("### Predicted leaderboard for Round 1")
+    st.markdown("### Predicted leaderboard through Round 2")
 
     predicted_cols = [
+        "predicted_rank_through_round2",
         "predicted_rank_round1",
         "player_name_clean",
         "predicted_round1",
+        "predicted_round2",
+        "predicted_total_through_round2",
         "feature_source_tournament",
         "feature_source_start",
         "rolling_avg_last_3",
@@ -204,14 +219,24 @@ def main() -> None:
     ]
     predicted_cols = [col for col in predicted_cols if col in filtered_prediction_df.columns]
 
+    predicted_view_df = filtered_prediction_df.sort_values(
+        ["predicted_rank_through_round2", "player_name_clean"]
+    ).copy()
+
     st.dataframe(
-        filtered_prediction_df[predicted_cols].head(show_top_n),
+        predicted_view_df[predicted_cols].head(show_top_n),
         use_container_width=True,
         hide_index=True,
     )
 
     st.markdown("### Prediction artifact")
-    st.dataframe(filtered_prediction_df, use_container_width=True, hide_index=True)
+    st.dataframe(
+        filtered_prediction_df.sort_values(
+            ["predicted_rank_through_round2", "player_name_clean"]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
 
     st.markdown("---")
     st.markdown("## Backtest view")

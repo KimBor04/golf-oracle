@@ -8,7 +8,9 @@ from pipelines.inference_pipeline import (
     build_pre_tournament_feature_rows,
     get_target_field,
     predict_round1,
-    predict_round2_backtest,
+    predict_round2,
+    prepare_round2_features,
+    validate_inference_mode,
 )
 
 
@@ -21,7 +23,6 @@ class DummyRound1Model:
 class DummyRound2Model:
     def predict(self, X: pd.DataFrame):
         # deterministic fake predictions for testing
-        # use actual round1 that was copied into the 'round1' feature in backtest mode
         return X["round1"].to_numpy() - 1.0
 
 
@@ -164,7 +165,6 @@ def test_predict_round1_adds_prediction_columns_and_ranks(sample_inference_df: p
     assert required_columns.issubset(predictions_df.columns)
     assert len(predictions_df) == 2
 
-    # bob should rank ahead of alice because 68.5 < 70.5
     assert predictions_df.iloc[0]["player_name_clean"] == "bob"
     assert predictions_df.iloc[0]["predicted_rank_round1"] == 1
     assert predictions_df.iloc[1]["player_name_clean"] == "alice"
@@ -175,6 +175,59 @@ def test_predict_round1_adds_prediction_columns_and_ranks(sample_inference_df: p
 
     assert bob_row["actual_rank_round1"] == 1
     assert alice_row["actual_rank_round1"] == 2
+
+
+def test_validate_inference_mode_rejects_invalid_value() -> None:
+    with pytest.raises(ValueError, match="Invalid inference mode"):
+        validate_inference_mode("not_a_real_mode")
+
+
+def test_prepare_round2_features_uses_actual_round1_in_backtest_mode(
+    sample_inference_df: pd.DataFrame,
+) -> None:
+    field_df = get_target_field(sample_inference_df, "Masters Tournament", "2025-04-10")
+    inference_df = build_pre_tournament_feature_rows(
+        sample_inference_df,
+        field_df,
+        pd.Timestamp("2025-04-10"),
+    )
+
+    round1_model = DummyRound1Model()
+    predictions_df = predict_round1(round1_model, inference_df)
+
+    round2_df = prepare_round2_features(predictions_df, mode="backtest")
+
+    bob_row = round2_df[round2_df["player_name_clean"] == "bob"].iloc[0]
+    alice_row = round2_df[round2_df["player_name_clean"] == "alice"].iloc[0]
+
+    assert bob_row["round1"] == bob_row["actual_round1"]
+    assert alice_row["round1"] == alice_row["actual_round1"]
+    assert (round2_df["round1_input_source"] == "actual_round1").all()
+    assert (round2_df["inference_mode"] == "backtest").all()
+
+
+def test_prepare_round2_features_uses_predicted_round1_in_live_mode(
+    sample_inference_df: pd.DataFrame,
+) -> None:
+    field_df = get_target_field(sample_inference_df, "Masters Tournament", "2025-04-10")
+    inference_df = build_pre_tournament_feature_rows(
+        sample_inference_df,
+        field_df,
+        pd.Timestamp("2025-04-10"),
+    )
+
+    round1_model = DummyRound1Model()
+    predictions_df = predict_round1(round1_model, inference_df)
+
+    round2_df = prepare_round2_features(predictions_df, mode="live")
+
+    bob_row = round2_df[round2_df["player_name_clean"] == "bob"].iloc[0]
+    alice_row = round2_df[round2_df["player_name_clean"] == "alice"].iloc[0]
+
+    assert bob_row["round1"] == bob_row["predicted_round1"]
+    assert alice_row["round1"] == alice_row["predicted_round1"]
+    assert (round2_df["round1_input_source"] == "predicted_round1").all()
+    assert (round2_df["inference_mode"] == "live").all()
 
 
 def test_predict_round2_backtest_adds_round2_and_total_columns(sample_inference_df: pd.DataFrame) -> None:
@@ -189,7 +242,7 @@ def test_predict_round2_backtest_adds_round2_and_total_columns(sample_inference_
     round2_model = DummyRound2Model()
 
     predictions_df = predict_round1(round1_model, inference_df)
-    predictions_df = predict_round2_backtest(round2_model, predictions_df)
+    predictions_df = predict_round2(round2_model, predictions_df, mode="backtest")
 
     required_columns = {
         "predicted_round2",
@@ -200,12 +253,13 @@ def test_predict_round2_backtest_adds_round2_and_total_columns(sample_inference_
         "abs_error_total_through_round2",
         "predicted_rank_through_round2",
         "actual_rank_through_round2",
+        "inference_mode",
+        "round1_input_source",
     }
 
     assert required_columns.issubset(predictions_df.columns)
     assert len(predictions_df) == 2
 
-    # round2 dummy model predicts actual_round1 - 1
     bob_row = predictions_df[predictions_df["player_name_clean"] == "bob"].iloc[0]
     alice_row = predictions_df[predictions_df["player_name_clean"] == "alice"].iloc[0]
 
@@ -214,6 +268,29 @@ def test_predict_round2_backtest_adds_round2_and_total_columns(sample_inference_
 
     assert bob_row["predicted_total_through_round2"] == bob_row["predicted_round1"] + bob_row["predicted_round2"]
     assert alice_row["predicted_total_through_round2"] == alice_row["predicted_round1"] + alice_row["predicted_round2"]
+
+
+def test_predict_round2_live_uses_predicted_round1(sample_inference_df: pd.DataFrame) -> None:
+    field_df = get_target_field(sample_inference_df, "Masters Tournament", "2025-04-10")
+    inference_df = build_pre_tournament_feature_rows(
+        sample_inference_df,
+        field_df,
+        pd.Timestamp("2025-04-10"),
+    )
+
+    round1_model = DummyRound1Model()
+    round2_model = DummyRound2Model()
+
+    predictions_df = predict_round1(round1_model, inference_df)
+    predictions_df = predict_round2(round2_model, predictions_df, mode="live")
+
+    bob_row = predictions_df[predictions_df["player_name_clean"] == "bob"].iloc[0]
+    alice_row = predictions_df[predictions_df["player_name_clean"] == "alice"].iloc[0]
+
+    assert bob_row["predicted_round2"] == bob_row["predicted_round1"] - 1.0
+    assert alice_row["predicted_round2"] == alice_row["predicted_round1"] - 1.0
+    assert (predictions_df["round1_input_source"] == "predicted_round1").all()
+    assert (predictions_df["inference_mode"] == "live").all()
 
 
 def test_build_prediction_output_returns_expected_columns(sample_inference_df: pd.DataFrame) -> None:
@@ -228,11 +305,12 @@ def test_build_prediction_output_returns_expected_columns(sample_inference_df: p
     round2_model = DummyRound2Model()
 
     predictions_df = predict_round1(round1_model, inference_df)
-    predictions_df = predict_round2_backtest(round2_model, predictions_df)
+    predictions_df = predict_round2(round2_model, predictions_df, mode="live")
     prediction_output_df = build_prediction_output(predictions_df)
 
     expected_columns = [
         "predicted_rank_round1",
+        "predicted_rank_through_round2",
         "player_name_clean",
         "target_tournament",
         "target_start",
@@ -240,6 +318,8 @@ def test_build_prediction_output_returns_expected_columns(sample_inference_df: p
         "feature_source_season",
         "feature_source_start",
         "feature_source_tournament",
+        "inference_mode",
+        "round1_input_source",
         "prev_tournament_avg_score",
         "prev_tournament_total",
         "prev_tournament_made_cut",
@@ -251,6 +331,8 @@ def test_build_prediction_output_returns_expected_columns(sample_inference_df: p
         "form_index_last_3",
         "career_tournament_count",
         "predicted_round1",
+        "predicted_round2",
+        "predicted_total_through_round2",
     ]
 
     assert prediction_output_df.columns.tolist() == expected_columns
@@ -269,7 +351,7 @@ def test_build_backtest_output_returns_expected_columns(sample_inference_df: pd.
     round2_model = DummyRound2Model()
 
     predictions_df = predict_round1(round1_model, inference_df)
-    predictions_df = predict_round2_backtest(round2_model, predictions_df)
+    predictions_df = predict_round2(round2_model, predictions_df, mode="backtest")
     backtest_output_df = build_backtest_output(predictions_df)
 
     expected_columns = [
@@ -284,6 +366,8 @@ def test_build_backtest_output_returns_expected_columns(sample_inference_df: pd.
         "feature_source_season",
         "feature_source_start",
         "feature_source_tournament",
+        "inference_mode",
+        "round1_input_source",
         "prev_tournament_avg_score",
         "prev_tournament_total",
         "prev_tournament_made_cut",

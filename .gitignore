@@ -1,4 +1,4 @@
-# virtual env
+# virtual environments
 .venv/
 venv/
 env/
@@ -20,18 +20,20 @@ __pycache__/
 .env.*
 !.env.example
 
-# data
+# raw data
 data/raw/*
 !data/raw/.gitkeep
 
-# generated features / predictions
-features/*.parquet
-predictions/*.parquet
+# generated feature artifacts
+features/*
+!features/.gitkeep
+
+# generated prediction artifacts
+predictions/*
+!predictions/.gitkeep
 
 # model artifacts
-models/*.joblib
-models/*.pkl
-models/*.bin
+models/*
 !models/.gitkeep
 
 # mlflow local artifacts

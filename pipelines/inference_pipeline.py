@@ -20,6 +20,7 @@ BACKTEST_OUTPUT_PATH = LEADERBOARD_BACKTEST_PATH
 
 TARGET_TOURNAMENT = "Masters Tournament"
 TARGET_START_DATE = "2025-04-10"
+INFERENCE_MODE = "live"  # allowed: "live", "backtest"
 
 ROUND1_FEATURE_COLUMNS = [
     "season",
@@ -163,6 +164,30 @@ def build_pre_tournament_feature_rows(
     return inference_df
 
 
+def validate_inference_mode(mode: str) -> None:
+    valid_modes = {"live", "backtest"}
+    if mode not in valid_modes:
+        raise ValueError(
+            f"Invalid inference mode: {mode}. Expected one of {sorted(valid_modes)}."
+        )
+
+
+def prepare_round2_features(predictions_df: pd.DataFrame, mode: str) -> pd.DataFrame:
+    validate_inference_mode(mode)
+
+    predictions = predictions_df.copy()
+
+    if mode == "backtest":
+        predictions["round1"] = predictions["actual_round1"]
+        predictions["round1_input_source"] = "actual_round1"
+    else:
+        predictions["round1"] = predictions["predicted_round1"]
+        predictions["round1_input_source"] = "predicted_round1"
+
+    predictions["inference_mode"] = mode
+    return predictions
+
+
 def predict_round1(round1_model, inference_df: pd.DataFrame) -> pd.DataFrame:
     X = inference_df[ROUND1_FEATURE_COLUMNS].copy()
 
@@ -194,26 +219,19 @@ def predict_round1(round1_model, inference_df: pd.DataFrame) -> pd.DataFrame:
     return predictions
 
 
-def predict_round2_backtest(round2_model, predictions_df: pd.DataFrame) -> pd.DataFrame:
-    predictions = predictions_df.copy()
-
-    predictions["round1"] = predictions["actual_round1"]
+def predict_round2(
+    round2_model,
+    predictions_df: pd.DataFrame,
+    mode: str,
+) -> pd.DataFrame:
+    predictions = prepare_round2_features(predictions_df, mode=mode)
 
     X = predictions[ROUND2_FEATURE_COLUMNS].copy()
     predictions["predicted_round2"] = round2_model.predict(X)
-    predictions["abs_error_round2"] = (
-        predictions["predicted_round2"] - predictions["actual_round2"]
-    ).abs()
 
     predictions["predicted_total_through_round2"] = (
         predictions["predicted_round1"] + predictions["predicted_round2"]
     )
-    predictions["actual_total_through_round2"] = (
-        predictions["actual_round1"] + predictions["actual_round2"]
-    )
-    predictions["abs_error_total_through_round2"] = (
-        predictions["predicted_total_through_round2"] - predictions["actual_total_through_round2"]
-    ).abs()
 
     predictions = predictions.sort_values(
         ["predicted_total_through_round2", "player_name_clean"],
@@ -221,18 +239,34 @@ def predict_round2_backtest(round2_model, predictions_df: pd.DataFrame) -> pd.Da
     ).reset_index(drop=True)
     predictions["predicted_rank_through_round2"] = predictions.index + 1
 
-    actual_rank_df = (
-        predictions[["player_name_clean", "actual_total_through_round2"]]
-        .sort_values(["actual_total_through_round2", "player_name_clean"], ascending=[True, True])
-        .reset_index(drop=True)
-    )
-    actual_rank_df["actual_rank_through_round2"] = actual_rank_df.index + 1
+    if mode == "backtest":
+        predictions["abs_error_round2"] = (
+            predictions["predicted_round2"] - predictions["actual_round2"]
+        ).abs()
 
-    predictions = predictions.merge(
-        actual_rank_df[["player_name_clean", "actual_rank_through_round2"]],
-        on="player_name_clean",
-        how="left",
-    )
+        predictions["actual_total_through_round2"] = (
+            predictions["actual_round1"] + predictions["actual_round2"]
+        )
+        predictions["abs_error_total_through_round2"] = (
+            predictions["predicted_total_through_round2"]
+            - predictions["actual_total_through_round2"]
+        ).abs()
+
+        actual_rank_df = (
+            predictions[["player_name_clean", "actual_total_through_round2"]]
+            .sort_values(
+                ["actual_total_through_round2", "player_name_clean"],
+                ascending=[True, True],
+            )
+            .reset_index(drop=True)
+        )
+        actual_rank_df["actual_rank_through_round2"] = actual_rank_df.index + 1
+
+        predictions = predictions.merge(
+            actual_rank_df[["player_name_clean", "actual_rank_through_round2"]],
+            on="player_name_clean",
+            how="left",
+        )
 
     return predictions
 
@@ -240,6 +274,7 @@ def predict_round2_backtest(round2_model, predictions_df: pd.DataFrame) -> pd.Da
 def build_prediction_output(predictions: pd.DataFrame) -> pd.DataFrame:
     output_columns = [
         "predicted_rank_round1",
+        "predicted_rank_through_round2",
         "player_name_clean",
         "target_tournament",
         "target_start",
@@ -247,6 +282,8 @@ def build_prediction_output(predictions: pd.DataFrame) -> pd.DataFrame:
         "feature_source_season",
         "feature_source_start",
         "feature_source_tournament",
+        "inference_mode",
+        "round1_input_source",
         "prev_tournament_avg_score",
         "prev_tournament_total",
         "prev_tournament_made_cut",
@@ -258,6 +295,8 @@ def build_prediction_output(predictions: pd.DataFrame) -> pd.DataFrame:
         "form_index_last_3",
         "career_tournament_count",
         "predicted_round1",
+        "predicted_round2",
+        "predicted_total_through_round2",
     ]
     return predictions[output_columns].copy()
 
@@ -275,6 +314,8 @@ def build_backtest_output(predictions: pd.DataFrame) -> pd.DataFrame:
         "feature_source_season",
         "feature_source_start",
         "feature_source_tournament",
+        "inference_mode",
+        "round1_input_source",
         "prev_tournament_avg_score",
         "prev_tournament_total",
         "prev_tournament_made_cut",
@@ -400,11 +441,21 @@ def main() -> None:
     print("Running Round 1 predictions...")
     predictions_df = predict_round1(round1_model, inference_df)
 
-    print("Running Round 2 backtest predictions...")
-    predictions_df = predict_round2_backtest(round2_model, predictions_df)
+    print(f"Running Round 2 {INFERENCE_MODE} predictions for prediction artifact...")
+    prediction_mode_df = predict_round2(
+        round2_model,
+        predictions_df,
+        mode=INFERENCE_MODE,
+    )
+    prediction_output_df = build_prediction_output(prediction_mode_df)
 
-    prediction_output_df = build_prediction_output(predictions_df)
-    backtest_output_df = build_backtest_output(predictions_df)
+    print("Running Round 2 backtest predictions for evaluation artifact...")
+    backtest_mode_df = predict_round2(
+        round2_model,
+        predictions_df,
+        mode="backtest",
+    )
+    backtest_output_df = build_backtest_output(backtest_mode_df)
 
     print(f"Saving prediction artifact to: {PREDICTION_OUTPUT_PATH}")
     print(f"Saving backtest artifact to:   {BACKTEST_OUTPUT_PATH}")

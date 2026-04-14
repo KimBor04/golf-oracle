@@ -1,0 +1,26 @@
+services:
+  golf-oracle:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: golf_oracle_app
+    working_dir: /app
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    command: python -m pipelines.inference_pipeline
+
+  ui:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: golf_oracle_ui
+    working_dir: /app
+    volumes:
+      - .:/app
+    env_file:
+      - .env
+    ports:
+      - "8501:8501"
+    command: streamlit run ui/app.py --server.address=0.0.0.0 --server.port=8501

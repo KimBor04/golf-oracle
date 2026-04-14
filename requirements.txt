@@ -1,11 +1,12 @@
 pandas
+pyarrow
 numpy
 scikit-learn
 xgboost
 pyarrow
 requests
-python-dotenv
+joblib
 streamlit
+python-dotenv
 mlflow
 pytest
-mlflow

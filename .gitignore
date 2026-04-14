@@ -37,6 +37,7 @@ models/*
 !models/.gitkeep
 
 # mlflow local artifacts
+your_mlflow_tracking_uri_here/
 mlruns/
 mlartifacts/
 

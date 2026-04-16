@@ -21,3 +21,50 @@ TOURNAMENT_TO_COURSE = {
     "AT&T Pebble Beach Pro-Am": "Pebble Beach",
     "THE PLAYERS Championship": "TPC Sawgrass",
 }
+
+CUT_RULES = {
+    "masters": {
+        "top_n": 50,
+        "ties": True,
+        "within_leader_strokes": 10,
+    },
+    "us_open": {
+        "top_n": 60,
+        "ties": True,
+        "within_leader_strokes": None,
+    },
+    "the_open": {
+        "top_n": 70,
+        "ties": True,
+        "within_leader_strokes": None,
+    },
+    "open_championship": {
+        "top_n": 70,
+        "ties": True,
+        "within_leader_strokes": None,
+    },
+    "pga_championship": {
+        "top_n": 70,
+        "ties": True,
+        "within_leader_strokes": None,
+    },
+    "default": {
+        "top_n": 65,
+        "ties": True,
+        "within_leader_strokes": None,
+    },
+}
+
+
+def normalize_tournament_key(tournament_name: str) -> str:
+    return tournament_name.lower().replace(" ", "_").replace("-", "_")
+
+
+def get_cut_rule(tournament_name: str) -> dict:
+    key = normalize_tournament_key(tournament_name)
+
+    for rule_key, rule in CUT_RULES.items():
+        if rule_key != "default" and rule_key in key:
+            return rule
+
+    return CUT_RULES["default"]

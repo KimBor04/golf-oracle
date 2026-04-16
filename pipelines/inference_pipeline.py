@@ -3,6 +3,7 @@ from __future__ import annotations
 import joblib
 import pandas as pd
 
+from src.config import get_cut_rule
 from src.paths import (
     FEATURES_DIR,
     MODELS_DIR,
@@ -271,6 +272,64 @@ def predict_round2(
     return predictions
 
 
+def apply_cut(predictions_df: pd.DataFrame, tournament_name: str) -> pd.DataFrame:
+    predictions = predictions_df.copy()
+
+    required_cols = {"predicted_round1", "predicted_round2", "predicted_total_through_round2"}
+    missing = required_cols - set(predictions.columns)
+    if missing:
+        raise ValueError(f"Missing required columns for cut logic: {sorted(missing)}")
+
+    if predictions.empty:
+        predictions["cut_rule_top_n"] = pd.NA
+        predictions["cut_rule_ties"] = pd.NA
+        predictions["cut_rule_within_leader_strokes"] = pd.NA
+        predictions["leader_score_r2"] = pd.NA
+        predictions["cut_line"] = pd.NA
+        predictions["made_cut_predicted"] = False
+        return predictions
+
+    predictions = predictions.sort_values(
+        ["predicted_total_through_round2", "player_name_clean"],
+        ascending=[True, True],
+    ).reset_index(drop=True)
+
+    rule = get_cut_rule(tournament_name)
+    top_n = rule["top_n"]
+    ties = rule["ties"]
+    within_leader_strokes = rule["within_leader_strokes"]
+
+    bubble_index = min(top_n, len(predictions)) - 1
+    cut_score = predictions.iloc[bubble_index]["predicted_total_through_round2"]
+    leader_score = predictions.iloc[0]["predicted_total_through_round2"]
+
+    if ties:
+        made_cut = predictions["predicted_total_through_round2"] <= cut_score
+    else:
+        made_cut = pd.Series(False, index=predictions.index)
+        made_cut.iloc[:top_n] = True
+
+    if within_leader_strokes is not None:
+        made_cut = made_cut | (
+            predictions["predicted_total_through_round2"] <= leader_score + within_leader_strokes
+        )
+
+    predictions["cut_rule_top_n"] = top_n
+    predictions["cut_rule_ties"] = ties
+    predictions["cut_rule_within_leader_strokes"] = within_leader_strokes
+    predictions["leader_score_r2"] = leader_score
+    predictions["cut_line"] = cut_score
+    predictions["made_cut_predicted"] = made_cut
+
+    return predictions
+
+
+def filter_players_making_cut(predictions_df: pd.DataFrame) -> pd.DataFrame:
+    if "made_cut_predicted" not in predictions_df.columns:
+        raise ValueError("DataFrame must include 'made_cut_predicted' before filtering cut players.")
+    return predictions_df[predictions_df["made_cut_predicted"]].copy()
+
+
 def build_prediction_output(predictions: pd.DataFrame) -> pd.DataFrame:
     output_columns = [
         "predicted_rank_round1",
@@ -297,6 +356,12 @@ def build_prediction_output(predictions: pd.DataFrame) -> pd.DataFrame:
         "predicted_round1",
         "predicted_round2",
         "predicted_total_through_round2",
+        "cut_rule_top_n",
+        "cut_rule_ties",
+        "cut_rule_within_leader_strokes",
+        "leader_score_r2",
+        "cut_line",
+        "made_cut_predicted",
     ]
     return predictions[output_columns].copy()
 
@@ -335,6 +400,12 @@ def build_backtest_output(predictions: pd.DataFrame) -> pd.DataFrame:
         "predicted_total_through_round2",
         "actual_total_through_round2",
         "abs_error_total_through_round2",
+        "cut_rule_top_n",
+        "cut_rule_ties",
+        "cut_rule_within_leader_strokes",
+        "leader_score_r2",
+        "cut_line",
+        "made_cut_predicted",
     ]
     return predictions[output_columns].copy()
 
@@ -343,6 +414,37 @@ def save_outputs(prediction_df: pd.DataFrame, backtest_df: pd.DataFrame) -> None
     PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
     prediction_df.to_parquet(PREDICTION_OUTPUT_PATH, index=False)
     backtest_df.to_parquet(BACKTEST_OUTPUT_PATH, index=False)
+
+
+def print_cut_summary(prediction_df: pd.DataFrame) -> None:
+    made_cut_count = int(prediction_df["made_cut_predicted"].sum())
+
+    print("\n=== PREDICTED CUT SUMMARY ===")
+    print(f"Tournament: {prediction_df['target_tournament'].iloc[0]}")
+    print(f"Predicted leader through Round 2: {prediction_df['leader_score_r2'].iloc[0]:.4f}")
+    print(f"Predicted cut line: {prediction_df['cut_line'].iloc[0]:.4f}")
+    print(f"Players predicted to make cut: {made_cut_count}")
+    print(f"Players predicted to miss cut: {len(prediction_df) - made_cut_count}")
+
+    print("\n=== TOP 10 PLAYERS AROUND THE CUT LINE ===")
+    around_cut = prediction_df.sort_values(
+        ["predicted_total_through_round2", "player_name_clean"],
+        ascending=[True, True],
+    ).reset_index(drop=True)
+
+    cut_candidates = around_cut[
+        [
+            "player_name_clean",
+            "predicted_total_through_round2",
+            "cut_line",
+            "made_cut_predicted",
+        ]
+    ]
+
+    start_idx = max(made_cut_count - 5, 0)
+    end_idx = min(made_cut_count + 5, len(cut_candidates))
+
+    print(cut_candidates.iloc[start_idx:end_idx].to_string(index=False))
 
 
 def print_event_summary(backtest_df: pd.DataFrame) -> None:
@@ -447,6 +549,12 @@ def main() -> None:
         predictions_df,
         mode=INFERENCE_MODE,
     )
+
+    print("Applying cut logic to prediction artifact...")
+    prediction_mode_df = apply_cut(
+        prediction_mode_df,
+        tournament_name=TARGET_TOURNAMENT,
+    )
     prediction_output_df = build_prediction_output(prediction_mode_df)
 
     print("Running Round 2 backtest predictions for evaluation artifact...")
@@ -455,12 +563,19 @@ def main() -> None:
         predictions_df,
         mode="backtest",
     )
+
+    print("Applying cut logic to backtest artifact...")
+    backtest_mode_df = apply_cut(
+        backtest_mode_df,
+        tournament_name=TARGET_TOURNAMENT,
+    )
     backtest_output_df = build_backtest_output(backtest_mode_df)
 
     print(f"Saving prediction artifact to: {PREDICTION_OUTPUT_PATH}")
     print(f"Saving backtest artifact to:   {BACKTEST_OUTPUT_PATH}")
     save_outputs(prediction_output_df, backtest_output_df)
 
+    print_cut_summary(prediction_output_df)
     print_event_summary(backtest_output_df)
 
     print("\nDone.")

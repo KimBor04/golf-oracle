@@ -3,6 +3,7 @@ import pytest
 
 from pipelines.inference_pipeline import (
     ROUND1_FEATURE_COLUMNS,
+    apply_cut,
     build_backtest_output,
     build_prediction_output,
     build_pre_tournament_feature_rows,
@@ -306,6 +307,7 @@ def test_build_prediction_output_returns_expected_columns(sample_inference_df: p
 
     predictions_df = predict_round1(round1_model, inference_df)
     predictions_df = predict_round2(round2_model, predictions_df, mode="live")
+    predictions_df = apply_cut(predictions_df, tournament_name="Masters Tournament")
     prediction_output_df = build_prediction_output(predictions_df)
 
     expected_columns = [
@@ -333,6 +335,12 @@ def test_build_prediction_output_returns_expected_columns(sample_inference_df: p
         "predicted_round1",
         "predicted_round2",
         "predicted_total_through_round2",
+        "cut_rule_top_n",
+        "cut_rule_ties",
+        "cut_rule_within_leader_strokes",
+        "leader_score_r2",
+        "cut_line",
+        "made_cut_predicted",
     ]
 
     assert prediction_output_df.columns.tolist() == expected_columns
@@ -352,6 +360,7 @@ def test_build_backtest_output_returns_expected_columns(sample_inference_df: pd.
 
     predictions_df = predict_round1(round1_model, inference_df)
     predictions_df = predict_round2(round2_model, predictions_df, mode="backtest")
+    predictions_df = apply_cut(predictions_df, tournament_name="Masters Tournament")
     backtest_output_df = build_backtest_output(predictions_df)
 
     expected_columns = [
@@ -387,6 +396,12 @@ def test_build_backtest_output_returns_expected_columns(sample_inference_df: pd.
         "predicted_total_through_round2",
         "actual_total_through_round2",
         "abs_error_total_through_round2",
+        "cut_rule_top_n",
+        "cut_rule_ties",
+        "cut_rule_within_leader_strokes",
+        "leader_score_r2",
+        "cut_line",
+        "made_cut_predicted",
     ]
 
     assert backtest_output_df.columns.tolist() == expected_columns
@@ -406,3 +421,89 @@ def test_build_pre_tournament_feature_rows_contains_required_feature_columns(
 
     for col in ROUND1_FEATURE_COLUMNS:
         assert col in inference_df.columns
+
+
+def test_apply_cut_default_top_65_and_ties() -> None:
+    df = pd.DataFrame(
+        {
+            "player_name_clean": [f"player_{i}" for i in range(1, 71)],
+            "predicted_round1": [70.0] * 70,
+            "predicted_round2": [float(i) for i in range(70)],
+            "predicted_total_through_round2": [70.0 + float(i) for i in range(70)],
+        }
+    )
+
+    result = apply_cut(df, tournament_name="Sony Open in Hawaii")
+
+    assert "made_cut_predicted" in result.columns
+    assert "cut_line" in result.columns
+    assert result["made_cut_predicted"].sum() == 65
+    assert result["cut_line"].iloc[0] == 134.0
+
+
+def test_apply_cut_default_top_65_and_ties_includes_ties() -> None:
+    totals = [140.0] * 64 + [141.0] * 3 + [150.0] * 3
+
+    df = pd.DataFrame(
+        {
+            "player_name_clean": [f"player_{i}" for i in range(1, 71)],
+            "predicted_round1": [70.0] * 70,
+            "predicted_round2": [t - 70.0 for t in totals],
+            "predicted_total_through_round2": totals,
+        }
+    )
+
+    result = apply_cut(df, tournament_name="Sony Open in Hawaii")
+
+    assert result["cut_line"].iloc[0] == 141.0
+    assert result["made_cut_predicted"].sum() == 67
+
+
+def test_apply_cut_masters_includes_players_within_10_of_leader() -> None:
+    totals = [140.0] * 50 + [149.0, 150.0] + [151.0, 152.0, 153.0]
+
+    df = pd.DataFrame(
+        {
+            "player_name_clean": [f"player_{i}" for i in range(1, 56)],
+            "predicted_round1": [70.0] * 55,
+            "predicted_round2": [t - 70.0 for t in totals],
+            "predicted_total_through_round2": totals,
+        }
+    )
+
+    result = apply_cut(df, tournament_name="Masters Tournament")
+
+    assert result["cut_rule_top_n"].iloc[0] == 50
+    assert result["cut_rule_within_leader_strokes"].iloc[0] == 10
+    assert result["leader_score_r2"].iloc[0] == 140.0
+    assert result["cut_line"].iloc[0] == 140.0
+    assert result["made_cut_predicted"].sum() == 52
+
+
+def test_apply_cut_when_field_smaller_than_cut_number() -> None:
+    df = pd.DataFrame(
+        {
+            "player_name_clean": [f"player_{i}" for i in range(1, 11)],
+            "predicted_round1": [70.0] * 10,
+            "predicted_round2": [float(i) for i in range(10)],
+            "predicted_total_through_round2": [70.0 + float(i) for i in range(10)],
+        }
+    )
+
+    result = apply_cut(df, tournament_name="Sony Open in Hawaii")
+
+    assert len(result) == 10
+    assert result["made_cut_predicted"].sum() == 10
+
+
+def test_apply_cut_raises_on_missing_prediction_columns() -> None:
+    df = pd.DataFrame(
+        {
+            "player_name_clean": ["a", "b", "c"],
+            "predicted_round1": [70.0, 71.0, 72.0],
+            "predicted_round2": [69.0, 70.0, 71.0],
+        }
+    )
+
+    with pytest.raises(ValueError, match="Missing required columns for cut logic"):
+        apply_cut(df, tournament_name="Masters Tournament")

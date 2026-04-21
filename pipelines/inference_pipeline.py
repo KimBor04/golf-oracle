@@ -14,6 +14,9 @@ from src.paths import (
 
 ROUND1_MODEL_PATH = MODELS_DIR / "xgb_round1_baseline.joblib"
 ROUND2_MODEL_PATH = MODELS_DIR / "xgb_round2_baseline.joblib"
+ROUND3_MODEL_PATH = MODELS_DIR / "xgb_round3_baseline.joblib"
+ROUND4_MODEL_PATH = MODELS_DIR / "xgb_round4_baseline.joblib"
+
 FEATURES_PATH = FEATURES_DIR / "historical_features.parquet"
 
 PREDICTION_OUTPUT_PATH = LEADERBOARD_PREDICTIONS_PATH
@@ -38,6 +41,8 @@ ROUND1_FEATURE_COLUMNS = [
 ]
 
 ROUND2_FEATURE_COLUMNS = ROUND1_FEATURE_COLUMNS + ["round1"]
+ROUND3_FEATURE_COLUMNS = ROUND1_FEATURE_COLUMNS + ["round1", "round2"]
+ROUND4_FEATURE_COLUMNS = ROUND1_FEATURE_COLUMNS + ["round1", "round2", "round3"]
 
 
 def load_features() -> pd.DataFrame:
@@ -53,6 +58,8 @@ def load_features() -> pd.DataFrame:
         "season",
         "round1",
         "round2",
+        "round3",
+        "round4",
         *ROUND1_FEATURE_COLUMNS,
     }
     missing = required_columns - set(df.columns)
@@ -131,7 +138,7 @@ def build_pre_tournament_feature_rows(
     inference_df = pd.concat(pre_tournament_rows, ignore_index=True)
 
     field_meta = field_df[
-        ["player_name_clean", "tournament", "start", "season", "round1", "round2"]
+        ["player_name_clean", "tournament", "start", "season", "round1", "round2", "round3", "round4"]
     ].copy()
 
     field_meta = field_meta.rename(
@@ -141,6 +148,8 @@ def build_pre_tournament_feature_rows(
             "season": "target_season",
             "round1": "actual_round1",
             "round2": "actual_round2",
+            "round3": "actual_round3",
+            "round4": "actual_round4",
         }
     )
 
@@ -175,7 +184,6 @@ def validate_inference_mode(mode: str) -> None:
 
 def prepare_round2_features(predictions_df: pd.DataFrame, mode: str) -> pd.DataFrame:
     validate_inference_mode(mode)
-
     predictions = predictions_df.copy()
 
     if mode == "backtest":
@@ -184,6 +192,42 @@ def prepare_round2_features(predictions_df: pd.DataFrame, mode: str) -> pd.DataF
     else:
         predictions["round1"] = predictions["predicted_round1"]
         predictions["round1_input_source"] = "predicted_round1"
+
+    predictions["inference_mode"] = mode
+    return predictions
+
+
+def prepare_round3_features(predictions_df: pd.DataFrame, mode: str) -> pd.DataFrame:
+    validate_inference_mode(mode)
+    predictions = predictions_df.copy()
+
+    if mode == "backtest":
+        predictions["round1"] = predictions["actual_round1"]
+        predictions["round2"] = predictions["actual_round2"]
+        predictions["round3_input_source"] = "actual_round1_actual_round2"
+    else:
+        predictions["round1"] = predictions["predicted_round1"]
+        predictions["round2"] = predictions["predicted_round2"]
+        predictions["round3_input_source"] = "predicted_round1_predicted_round2"
+
+    predictions["inference_mode"] = mode
+    return predictions
+
+
+def prepare_round4_features(predictions_df: pd.DataFrame, mode: str) -> pd.DataFrame:
+    validate_inference_mode(mode)
+    predictions = predictions_df.copy()
+
+    if mode == "backtest":
+        predictions["round1"] = predictions["actual_round1"]
+        predictions["round2"] = predictions["actual_round2"]
+        predictions["round3"] = predictions["actual_round3"]
+        predictions["round4_input_source"] = "actual_round1_actual_round2_actual_round3"
+    else:
+        predictions["round1"] = predictions["predicted_round1"]
+        predictions["round2"] = predictions["predicted_round2"]
+        predictions["round3"] = predictions["predicted_round3"]
+        predictions["round4_input_source"] = "predicted_round1_predicted_round2_predicted_round3"
 
     predictions["inference_mode"] = mode
     return predictions
@@ -220,11 +264,7 @@ def predict_round1(round1_model, inference_df: pd.DataFrame) -> pd.DataFrame:
     return predictions
 
 
-def predict_round2(
-    round2_model,
-    predictions_df: pd.DataFrame,
-    mode: str,
-) -> pd.DataFrame:
+def predict_round2(round2_model, predictions_df: pd.DataFrame, mode: str) -> pd.DataFrame:
     predictions = prepare_round2_features(predictions_df, mode=mode)
 
     X = predictions[ROUND2_FEATURE_COLUMNS].copy()
@@ -330,10 +370,84 @@ def filter_players_making_cut(predictions_df: pd.DataFrame) -> pd.DataFrame:
     return predictions_df[predictions_df["made_cut_predicted"]].copy()
 
 
+def predict_round3(round3_model, predictions_df: pd.DataFrame, mode: str) -> pd.DataFrame:
+    predictions = filter_players_making_cut(predictions_df)
+    predictions = prepare_round3_features(predictions, mode=mode)
+
+    X = predictions[ROUND3_FEATURE_COLUMNS].copy()
+    predictions["predicted_round3"] = round3_model.predict(X)
+
+    predictions["predicted_total_through_round3"] = (
+        predictions["predicted_round1"]
+        + predictions["predicted_round2"]
+        + predictions["predicted_round3"]
+    )
+
+    predictions = predictions.sort_values(
+        ["predicted_total_through_round3", "player_name_clean"],
+        ascending=[True, True],
+    ).reset_index(drop=True)
+    predictions["predicted_rank_through_round3"] = predictions.index + 1
+
+    if mode == "backtest":
+        predictions["abs_error_round3"] = (
+            predictions["predicted_round3"] - predictions["actual_round3"]
+        ).abs()
+
+        predictions["actual_total_through_round3"] = (
+            predictions["actual_round1"] + predictions["actual_round2"] + predictions["actual_round3"]
+        )
+        predictions["abs_error_total_through_round3"] = (
+            predictions["predicted_total_through_round3"]
+            - predictions["actual_total_through_round3"]
+        ).abs()
+
+    return predictions
+
+
+def predict_round4(round4_model, predictions_df: pd.DataFrame, mode: str) -> pd.DataFrame:
+    predictions = prepare_round4_features(predictions_df, mode=mode)
+
+    X = predictions[ROUND4_FEATURE_COLUMNS].copy()
+    predictions["predicted_round4"] = round4_model.predict(X)
+
+    predictions["predicted_total"] = (
+        predictions["predicted_round1"]
+        + predictions["predicted_round2"]
+        + predictions["predicted_round3"]
+        + predictions["predicted_round4"]
+    )
+
+    predictions = predictions.sort_values(
+        ["predicted_total", "player_name_clean"],
+        ascending=[True, True],
+    ).reset_index(drop=True)
+    predictions["predicted_rank_final"] = predictions.index + 1
+
+    if mode == "backtest":
+        predictions["abs_error_round4"] = (
+            predictions["predicted_round4"] - predictions["actual_round4"]
+        ).abs()
+
+        predictions["actual_total"] = (
+            predictions["actual_round1"]
+            + predictions["actual_round2"]
+            + predictions["actual_round3"]
+            + predictions["actual_round4"]
+        )
+        predictions["abs_error_total"] = (
+            predictions["predicted_total"] - predictions["actual_total"]
+        ).abs()
+
+    return predictions
+
+
 def build_prediction_output(predictions: pd.DataFrame) -> pd.DataFrame:
     output_columns = [
         "predicted_rank_round1",
         "predicted_rank_through_round2",
+        "predicted_rank_through_round3",
+        "predicted_rank_final",
         "player_name_clean",
         "target_tournament",
         "target_start",
@@ -343,19 +457,15 @@ def build_prediction_output(predictions: pd.DataFrame) -> pd.DataFrame:
         "feature_source_tournament",
         "inference_mode",
         "round1_input_source",
-        "prev_tournament_avg_score",
-        "prev_tournament_total",
-        "prev_tournament_made_cut",
-        "prev_tournament_earnings",
-        "rolling_avg_last_3",
-        "rolling_avg_last_5",
-        "rolling_total_last_3",
-        "made_cut_rate_last_5",
-        "form_index_last_3",
-        "career_tournament_count",
+        "round3_input_source",
+        "round4_input_source",
         "predicted_round1",
         "predicted_round2",
+        "predicted_round3",
+        "predicted_round4",
         "predicted_total_through_round2",
+        "predicted_total_through_round3",
+        "predicted_total",
         "cut_rule_top_n",
         "cut_rule_ties",
         "cut_rule_within_leader_strokes",
@@ -372,6 +482,8 @@ def build_backtest_output(predictions: pd.DataFrame) -> pd.DataFrame:
         "actual_rank_round1",
         "predicted_rank_through_round2",
         "actual_rank_through_round2",
+        "predicted_rank_through_round3",
+        "predicted_rank_final",
         "player_name_clean",
         "target_tournament",
         "target_start",
@@ -381,25 +493,29 @@ def build_backtest_output(predictions: pd.DataFrame) -> pd.DataFrame:
         "feature_source_tournament",
         "inference_mode",
         "round1_input_source",
-        "prev_tournament_avg_score",
-        "prev_tournament_total",
-        "prev_tournament_made_cut",
-        "prev_tournament_earnings",
-        "rolling_avg_last_3",
-        "rolling_avg_last_5",
-        "rolling_total_last_3",
-        "made_cut_rate_last_5",
-        "form_index_last_3",
-        "career_tournament_count",
+        "round3_input_source",
+        "round4_input_source",
         "predicted_round1",
         "actual_round1",
         "abs_error_round1",
         "predicted_round2",
         "actual_round2",
         "abs_error_round2",
+        "predicted_round3",
+        "actual_round3",
+        "abs_error_round3",
+        "predicted_round4",
+        "actual_round4",
+        "abs_error_round4",
         "predicted_total_through_round2",
         "actual_total_through_round2",
         "abs_error_total_through_round2",
+        "predicted_total_through_round3",
+        "actual_total_through_round3",
+        "abs_error_total_through_round3",
+        "predicted_total",
+        "actual_total",
+        "abs_error_total",
         "cut_rule_top_n",
         "cut_rule_ties",
         "cut_rule_within_leader_strokes",
@@ -414,111 +530,6 @@ def save_outputs(prediction_df: pd.DataFrame, backtest_df: pd.DataFrame) -> None
     PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
     prediction_df.to_parquet(PREDICTION_OUTPUT_PATH, index=False)
     backtest_df.to_parquet(BACKTEST_OUTPUT_PATH, index=False)
-
-
-def print_cut_summary(prediction_df: pd.DataFrame) -> None:
-    made_cut_count = int(prediction_df["made_cut_predicted"].sum())
-
-    print("\n=== PREDICTED CUT SUMMARY ===")
-    print(f"Tournament: {prediction_df['target_tournament'].iloc[0]}")
-    print(f"Predicted leader through Round 2: {prediction_df['leader_score_r2'].iloc[0]:.4f}")
-    print(f"Predicted cut line: {prediction_df['cut_line'].iloc[0]:.4f}")
-    print(f"Players predicted to make cut: {made_cut_count}")
-    print(f"Players predicted to miss cut: {len(prediction_df) - made_cut_count}")
-
-    print("\n=== TOP 10 PLAYERS AROUND THE CUT LINE ===")
-    around_cut = prediction_df.sort_values(
-        ["predicted_total_through_round2", "player_name_clean"],
-        ascending=[True, True],
-    ).reset_index(drop=True)
-
-    cut_candidates = around_cut[
-        [
-            "player_name_clean",
-            "predicted_total_through_round2",
-            "cut_line",
-            "made_cut_predicted",
-        ]
-    ]
-
-    start_idx = max(made_cut_count - 5, 0)
-    end_idx = min(made_cut_count + 5, len(cut_candidates))
-
-    print(cut_candidates.iloc[start_idx:end_idx].to_string(index=False))
-
-
-def print_event_summary(backtest_df: pd.DataFrame) -> None:
-    event_mae_round1 = backtest_df["abs_error_round1"].mean()
-    event_rmse_round1 = (
-        ((backtest_df["predicted_round1"] - backtest_df["actual_round1"]) ** 2).mean() ** 0.5
-    )
-
-    event_mae_round2 = backtest_df["abs_error_round2"].mean()
-    event_rmse_round2 = (
-        ((backtest_df["predicted_round2"] - backtest_df["actual_round2"]) ** 2).mean() ** 0.5
-    )
-
-    event_mae_total_r2 = backtest_df["abs_error_total_through_round2"].mean()
-    event_rmse_total_r2 = (
-        (
-            (
-                backtest_df["predicted_total_through_round2"]
-                - backtest_df["actual_total_through_round2"]
-            ) ** 2
-        ).mean() ** 0.5
-    )
-
-    print("\n=== EVENT BACKTEST SUMMARY ===")
-    print(f"Tournament: {backtest_df['target_tournament'].iloc[0]}")
-    print(f"Start date: {backtest_df['target_start'].iloc[0].date()}")
-    print(f"Players evaluated: {len(backtest_df)}")
-
-    print("\nRound 1 metrics:")
-    print(f"MAE:  {event_mae_round1:.4f}")
-    print(f"RMSE: {event_rmse_round1:.4f}")
-
-    print("\nRound 2 metrics:")
-    print(f"MAE:  {event_mae_round2:.4f}")
-    print(f"RMSE: {event_rmse_round2:.4f}")
-
-    print("\nTotal through Round 2 metrics:")
-    print(f"MAE:  {event_mae_total_r2:.4f}")
-    print(f"RMSE: {event_rmse_total_r2:.4f}")
-
-    print("\n=== TOP 10 PREDICTED LEADERBOARD THROUGH ROUND 2 ===")
-    print(
-        backtest_df[
-            [
-                "predicted_rank_through_round2",
-                "player_name_clean",
-                "predicted_round1",
-                "actual_round1",
-                "predicted_round2",
-                "actual_round2",
-                "predicted_total_through_round2",
-                "actual_total_through_round2",
-                "actual_rank_through_round2",
-            ]
-        ]
-        .head(10)
-        .to_string(index=False)
-    )
-
-    print("\n=== TOP 10 ACTUAL LEADERBOARD THROUGH ROUND 2 ===")
-    print(
-        backtest_df.sort_values(["actual_rank_through_round2", "player_name_clean"])[
-            [
-                "actual_rank_through_round2",
-                "player_name_clean",
-                "actual_total_through_round2",
-                "predicted_total_through_round2",
-                "predicted_rank_through_round2",
-                "abs_error_total_through_round2",
-            ]
-        ]
-        .head(10)
-        .to_string(index=False)
-    )
 
 
 def main() -> None:
@@ -539,44 +550,43 @@ def main() -> None:
     print("Loading models...")
     round1_model = load_model(ROUND1_MODEL_PATH)
     round2_model = load_model(ROUND2_MODEL_PATH)
+    round3_model = load_model(ROUND3_MODEL_PATH)
+    round4_model = load_model(ROUND4_MODEL_PATH)
 
     print("Running Round 1 predictions...")
     predictions_df = predict_round1(round1_model, inference_df)
 
     print(f"Running Round 2 {INFERENCE_MODE} predictions for prediction artifact...")
-    prediction_mode_df = predict_round2(
-        round2_model,
-        predictions_df,
-        mode=INFERENCE_MODE,
-    )
+    prediction_mode_df = predict_round2(round2_model, predictions_df, mode=INFERENCE_MODE)
 
     print("Applying cut logic to prediction artifact...")
-    prediction_mode_df = apply_cut(
-        prediction_mode_df,
-        tournament_name=TARGET_TOURNAMENT,
-    )
+    prediction_mode_df = apply_cut(prediction_mode_df, tournament_name=TARGET_TOURNAMENT)
+
+    print(f"Running Round 3 {INFERENCE_MODE} predictions for prediction artifact...")
+    prediction_mode_df = predict_round3(round3_model, prediction_mode_df, mode=INFERENCE_MODE)
+
+    print(f"Running Round 4 {INFERENCE_MODE} predictions for prediction artifact...")
+    prediction_mode_df = predict_round4(round4_model, prediction_mode_df, mode=INFERENCE_MODE)
+
     prediction_output_df = build_prediction_output(prediction_mode_df)
 
     print("Running Round 2 backtest predictions for evaluation artifact...")
-    backtest_mode_df = predict_round2(
-        round2_model,
-        predictions_df,
-        mode="backtest",
-    )
+    backtest_mode_df = predict_round2(round2_model, predictions_df, mode="backtest")
 
     print("Applying cut logic to backtest artifact...")
-    backtest_mode_df = apply_cut(
-        backtest_mode_df,
-        tournament_name=TARGET_TOURNAMENT,
-    )
+    backtest_mode_df = apply_cut(backtest_mode_df, tournament_name=TARGET_TOURNAMENT)
+
+    print("Running Round 3 backtest predictions for evaluation artifact...")
+    backtest_mode_df = predict_round3(round3_model, backtest_mode_df, mode="backtest")
+
+    print("Running Round 4 backtest predictions for evaluation artifact...")
+    backtest_mode_df = predict_round4(round4_model, backtest_mode_df, mode="backtest")
+
     backtest_output_df = build_backtest_output(backtest_mode_df)
 
     print(f"Saving prediction artifact to: {PREDICTION_OUTPUT_PATH}")
     print(f"Saving backtest artifact to:   {BACKTEST_OUTPUT_PATH}")
     save_outputs(prediction_output_df, backtest_output_df)
-
-    print_cut_summary(prediction_output_df)
-    print_event_summary(backtest_output_df)
 
     print("\nDone.")
 

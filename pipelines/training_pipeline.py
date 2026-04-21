@@ -17,6 +17,8 @@ FEATURES_PATH = HISTORICAL_FEATURES_PATH
 
 ROUND1_MODEL_PATH = MODELS_DIR / "xgb_round1_baseline.joblib"
 ROUND2_MODEL_PATH = MODELS_DIR / "xgb_round2_baseline.joblib"
+ROUND3_MODEL_PATH = MODELS_DIR / "xgb_round3_baseline.joblib"
+ROUND4_MODEL_PATH = MODELS_DIR / "xgb_round4_baseline.joblib"
 
 MLFLOW_EXPERIMENT_NAME = "golf-oracle-baselines"
 
@@ -44,6 +46,16 @@ ROUND_FEATURE_CONFIG = {
         "target_col": "round2",
         "feature_cols": BASE_FEATURE_COLUMNS + ["round1"],
         "model_path": ROUND2_MODEL_PATH,
+    },
+    "round3": {
+        "target_col": "round3",
+        "feature_cols": BASE_FEATURE_COLUMNS + ["round1", "round2"],
+        "model_path": ROUND3_MODEL_PATH,
+    },
+    "round4": {
+        "target_col": "round4",
+        "feature_cols": BASE_FEATURE_COLUMNS + ["round1", "round2", "round3"],
+        "model_path": ROUND4_MODEL_PATH,
     },
 }
 
@@ -277,6 +289,8 @@ def main() -> None:
 
     run_training_for_round("round1")
     run_training_for_round("round2")
+    run_training_for_round("round3")
+    run_training_for_round("round4")
 
 
 if __name__ == "__main__":

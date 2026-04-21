@@ -7,24 +7,37 @@ from pipelines.inference_pipeline import (
     build_backtest_output,
     build_prediction_output,
     build_pre_tournament_feature_rows,
+    filter_players_making_cut,
     get_target_field,
     predict_round1,
     predict_round2,
+    predict_round3,
+    predict_round4,
     prepare_round2_features,
+    prepare_round3_features,
+    prepare_round4_features,
     validate_inference_mode,
 )
 
 
 class DummyRound1Model:
     def predict(self, X: pd.DataFrame):
-        # deterministic fake predictions for testing
         return X["prev_tournament_avg_score"].to_numpy()
 
 
 class DummyRound2Model:
     def predict(self, X: pd.DataFrame):
-        # deterministic fake predictions for testing
         return X["round1"].to_numpy() - 1.0
+
+
+class DummyRound3Model:
+    def predict(self, X: pd.DataFrame):
+        return X["round2"].to_numpy() - 1.0
+
+
+class DummyRound4Model:
+    def predict(self, X: pd.DataFrame):
+        return X["round3"].to_numpy() - 1.0
 
 
 @pytest.fixture
@@ -53,6 +66,8 @@ def sample_inference_df() -> pd.DataFrame:
             "season": [2025, 2025, 2025, 2025, 2025],
             "round1": [70, 72, 68, 69, 71],
             "round2": [71, 73, 67, 68, 72],
+            "round3": [72, 74, 66, 67, 73],
+            "round4": [73, 75, 65, 66, 74],
             "prev_tournament_avg_score": [70.5, 70.5, 68.5, 68.5, None],
             "prev_tournament_total": [282, 282, 274, 274, None],
             "prev_tournament_made_cut": [1, 1, 1, 1, None],
@@ -63,6 +78,59 @@ def sample_inference_df() -> pd.DataFrame:
             "made_cut_rate_last_5": [1.0, 1.0, 1.0, 1.0, None],
             "form_index_last_3": [70.5, 70.5, 68.5, 68.5, None],
             "career_tournament_count": [1, 1, 1, 1, None],
+        }
+    )
+
+
+@pytest.fixture
+def weekend_predictions_df() -> pd.DataFrame:
+    return pd.DataFrame(
+        {
+            "player_name_clean": ["alice", "bob", "charlie"],
+            "target_tournament": ["Masters Tournament"] * 3,
+            "target_start": [pd.Timestamp("2025-04-10")] * 3,
+            "target_season": [2025] * 3,
+            "season": [2025] * 3,
+            "feature_source_season": [2025] * 3,
+            "feature_source_start": [
+                pd.Timestamp("2025-03-01"),
+                pd.Timestamp("2025-03-15"),
+                pd.Timestamp("2025-03-20"),
+            ],
+            "feature_source_tournament": ["Event A", "Event B", "Event C"],
+            "predicted_rank_round1": [2, 1, 3],
+            "actual_rank_round1": [2, 1, 3],
+            "predicted_round1": [70.5, 68.5, 71.5],
+            "actual_round1": [72.0, 69.0, 74.0],
+            "abs_error_round1": [1.5, 0.5, 2.5],
+            "round1_input_source": ["predicted_round1"] * 3,
+            "predicted_round2": [69.5, 67.5, 72.5],
+            "actual_round2": [73.0, 68.0, 75.0],
+            "abs_error_round2": [3.5, 0.5, 2.5],
+            "predicted_total_through_round2": [140.0, 136.0, 144.0],
+            "actual_total_through_round2": [145.0, 137.0, 149.0],
+            "abs_error_total_through_round2": [5.0, 1.0, 5.0],
+            "predicted_rank_through_round2": [2, 1, 3],
+            "actual_rank_through_round2": [2, 1, 3],
+            "cut_rule_top_n": [50] * 3,
+            "cut_rule_ties": [True] * 3,
+            "cut_rule_within_leader_strokes": [10] * 3,
+            "leader_score_r2": [136.0] * 3,
+            "cut_line": [144.0] * 3,
+            "made_cut_predicted": [True, True, False],
+            "prev_tournament_avg_score": [70.5, 68.5, 71.5],
+            "prev_tournament_total": [282.0, 274.0, 286.0],
+            "prev_tournament_made_cut": [1.0, 1.0, 0.0],
+            "prev_tournament_earnings": [1000.0, 1500.0, 400.0],
+            "rolling_avg_last_3": [70.5, 68.5, 71.5],
+            "rolling_avg_last_5": [70.5, 68.5, 71.5],
+            "rolling_total_last_3": [282.0, 274.0, 286.0],
+            "made_cut_rate_last_5": [1.0, 1.0, 0.4],
+            "form_index_last_3": [70.5, 68.5, 71.5],
+            "career_tournament_count": [10.0, 8.0, 3.0],
+            "actual_round3": [74.0, 67.0, 76.0],
+            "actual_round4": [75.0, 66.0, 77.0],
+            "inference_mode": ["live"] * 3,
         }
     )
 
@@ -107,6 +175,8 @@ def test_build_pre_tournament_feature_rows_uses_latest_history_row(
             "season": [2025],
             "round1": [74],
             "round2": [75],
+            "round3": [76],
+            "round4": [77],
             "prev_tournament_avg_score": [74.5],
             "prev_tournament_total": [298],
             "prev_tournament_made_cut": [0],
@@ -294,6 +364,155 @@ def test_predict_round2_live_uses_predicted_round1(sample_inference_df: pd.DataF
     assert (predictions_df["inference_mode"] == "live").all()
 
 
+def test_prepare_round3_features_uses_actual_rounds_in_backtest_mode(
+    weekend_predictions_df: pd.DataFrame,
+) -> None:
+    round3_df = prepare_round3_features(weekend_predictions_df, mode="backtest")
+
+    kept = round3_df[round3_df["player_name_clean"].isin(["alice", "bob"])]
+
+    assert (kept["round1"] == kept["actual_round1"]).all()
+    assert (kept["round2"] == kept["actual_round2"]).all()
+    assert (round3_df["round3_input_source"] == "actual_round1_actual_round2").all()
+    assert (round3_df["inference_mode"] == "backtest").all()
+
+
+def test_prepare_round3_features_uses_predicted_rounds_in_live_mode(
+    weekend_predictions_df: pd.DataFrame,
+) -> None:
+    round3_df = prepare_round3_features(weekend_predictions_df, mode="live")
+
+    kept = round3_df[round3_df["player_name_clean"].isin(["alice", "bob"])]
+
+    assert (kept["round1"] == kept["predicted_round1"]).all()
+    assert (kept["round2"] == kept["predicted_round2"]).all()
+    assert (round3_df["round3_input_source"] == "predicted_round1_predicted_round2").all()
+    assert (round3_df["inference_mode"] == "live").all()
+
+
+def test_prepare_round4_features_uses_actual_rounds_in_backtest_mode(
+    weekend_predictions_df: pd.DataFrame,
+) -> None:
+    df = weekend_predictions_df.copy()
+    df["predicted_round3"] = [72.0, 66.0, 75.0]
+
+    round4_df = prepare_round4_features(df, mode="backtest")
+
+    kept = round4_df[round4_df["player_name_clean"].isin(["alice", "bob"])]
+
+    assert (kept["round1"] == kept["actual_round1"]).all()
+    assert (kept["round2"] == kept["actual_round2"]).all()
+    assert (kept["round3"] == kept["actual_round3"]).all()
+    assert (round4_df["round4_input_source"] == "actual_round1_actual_round2_actual_round3").all()
+    assert (round4_df["inference_mode"] == "backtest").all()
+
+
+def test_prepare_round4_features_uses_predicted_rounds_in_live_mode(
+    weekend_predictions_df: pd.DataFrame,
+) -> None:
+    df = weekend_predictions_df.copy()
+    df["predicted_round3"] = [68.5, 66.5, 73.5]
+
+    round4_df = prepare_round4_features(df, mode="live")
+
+    kept = round4_df[round4_df["player_name_clean"].isin(["alice", "bob"])]
+
+    assert (kept["round1"] == kept["predicted_round1"]).all()
+    assert (kept["round2"] == kept["predicted_round2"]).all()
+    assert (kept["round3"] == kept["predicted_round3"]).all()
+    assert (round4_df["round4_input_source"] == "predicted_round1_predicted_round2_predicted_round3").all()
+    assert (round4_df["inference_mode"] == "live").all()
+
+
+def test_filter_players_making_cut_keeps_only_true_rows(weekend_predictions_df: pd.DataFrame) -> None:
+    result = filter_players_making_cut(weekend_predictions_df)
+
+    assert set(result["player_name_clean"]) == {"alice", "bob"}
+    assert result["made_cut_predicted"].all()
+
+
+def test_predict_round3_only_uses_players_making_cut(weekend_predictions_df: pd.DataFrame) -> None:
+    round3_model = DummyRound3Model()
+
+    result = predict_round3(round3_model, weekend_predictions_df, mode="live")
+
+    assert set(result["player_name_clean"]) == {"alice", "bob"}
+    assert "charlie" not in set(result["player_name_clean"])
+    assert "predicted_round3" in result.columns
+    assert "predicted_total_through_round3" in result.columns
+    assert "predicted_rank_through_round3" in result.columns
+
+
+def test_predict_round3_live_uses_predicted_round2(weekend_predictions_df: pd.DataFrame) -> None:
+    round3_model = DummyRound3Model()
+
+    result = predict_round3(round3_model, weekend_predictions_df, mode="live")
+
+    bob_row = result[result["player_name_clean"] == "bob"].iloc[0]
+    alice_row = result[result["player_name_clean"] == "alice"].iloc[0]
+
+    assert bob_row["predicted_round3"] == bob_row["predicted_round2"] - 1.0
+    assert alice_row["predicted_round3"] == alice_row["predicted_round2"] - 1.0
+
+
+def test_predict_round3_backtest_adds_actuals_and_errors(weekend_predictions_df: pd.DataFrame) -> None:
+    round3_model = DummyRound3Model()
+
+    result = predict_round3(round3_model, weekend_predictions_df, mode="backtest")
+
+    required_columns = {
+        "predicted_round3",
+        "actual_round3",
+        "abs_error_round3",
+        "predicted_total_through_round3",
+        "actual_total_through_round3",
+        "abs_error_total_through_round3",
+        "predicted_rank_through_round3",
+    }
+
+    assert required_columns.issubset(result.columns)
+    assert set(result["player_name_clean"]) == {"alice", "bob"}
+
+
+def test_predict_round4_live_adds_final_total_and_rank(weekend_predictions_df: pd.DataFrame) -> None:
+    round3_model = DummyRound3Model()
+    round4_model = DummyRound4Model()
+
+    round3_df = predict_round3(round3_model, weekend_predictions_df, mode="live")
+    result = predict_round4(round4_model, round3_df, mode="live")
+
+    required_columns = {
+        "predicted_round4",
+        "predicted_total",
+        "predicted_rank_final",
+        "round4_input_source",
+    }
+
+    assert required_columns.issubset(result.columns)
+    assert set(result["player_name_clean"]) == {"alice", "bob"}
+
+
+def test_predict_round4_backtest_adds_actuals_and_errors(weekend_predictions_df: pd.DataFrame) -> None:
+    round3_model = DummyRound3Model()
+    round4_model = DummyRound4Model()
+
+    round3_df = predict_round3(round3_model, weekend_predictions_df, mode="backtest")
+    result = predict_round4(round4_model, round3_df, mode="backtest")
+
+    required_columns = {
+        "predicted_round4",
+        "actual_round4",
+        "abs_error_round4",
+        "predicted_total",
+        "actual_total",
+        "abs_error_total",
+        "predicted_rank_final",
+    }
+
+    assert required_columns.issubset(result.columns)
+    assert set(result["player_name_clean"]) == {"alice", "bob"}
+
+
 def test_build_prediction_output_returns_expected_columns(sample_inference_df: pd.DataFrame) -> None:
     field_df = get_target_field(sample_inference_df, "Masters Tournament", "2025-04-10")
     inference_df = build_pre_tournament_feature_rows(
@@ -308,11 +527,31 @@ def test_build_prediction_output_returns_expected_columns(sample_inference_df: p
     predictions_df = predict_round1(round1_model, inference_df)
     predictions_df = predict_round2(round2_model, predictions_df, mode="live")
     predictions_df = apply_cut(predictions_df, tournament_name="Masters Tournament")
+
+    predictions_df = predictions_df[predictions_df["made_cut_predicted"]].copy()
+    predictions_df["round3_input_source"] = "predicted_round1_predicted_round2"
+    predictions_df["round4_input_source"] = "predicted_round1_predicted_round2_predicted_round3"
+    predictions_df["predicted_round3"] = [66.5, 69.5]
+    predictions_df["predicted_round4"] = [65.5, 68.5]
+    predictions_df["predicted_total_through_round3"] = (
+        predictions_df["predicted_round1"]
+        + predictions_df["predicted_round2"]
+        + predictions_df["predicted_round3"]
+    )
+    predictions_df["predicted_total"] = (
+        predictions_df["predicted_total_through_round3"]
+        + predictions_df["predicted_round4"]
+    )
+    predictions_df["predicted_rank_through_round3"] = [1, 2]
+    predictions_df["predicted_rank_final"] = [1, 2]
+
     prediction_output_df = build_prediction_output(predictions_df)
 
     expected_columns = [
         "predicted_rank_round1",
         "predicted_rank_through_round2",
+        "predicted_rank_through_round3",
+        "predicted_rank_final",
         "player_name_clean",
         "target_tournament",
         "target_start",
@@ -322,19 +561,15 @@ def test_build_prediction_output_returns_expected_columns(sample_inference_df: p
         "feature_source_tournament",
         "inference_mode",
         "round1_input_source",
-        "prev_tournament_avg_score",
-        "prev_tournament_total",
-        "prev_tournament_made_cut",
-        "prev_tournament_earnings",
-        "rolling_avg_last_3",
-        "rolling_avg_last_5",
-        "rolling_total_last_3",
-        "made_cut_rate_last_5",
-        "form_index_last_3",
-        "career_tournament_count",
+        "round3_input_source",
+        "round4_input_source",
         "predicted_round1",
         "predicted_round2",
+        "predicted_round3",
+        "predicted_round4",
         "predicted_total_through_round2",
+        "predicted_total_through_round3",
+        "predicted_total",
         "cut_rule_top_n",
         "cut_rule_ties",
         "cut_rule_within_leader_strokes",
@@ -347,27 +582,42 @@ def test_build_prediction_output_returns_expected_columns(sample_inference_df: p
     assert len(prediction_output_df) == 2
 
 
-def test_build_backtest_output_returns_expected_columns(sample_inference_df: pd.DataFrame) -> None:
-    field_df = get_target_field(sample_inference_df, "Masters Tournament", "2025-04-10")
-    inference_df = build_pre_tournament_feature_rows(
-        sample_inference_df,
-        field_df,
-        pd.Timestamp("2025-04-10"),
+def test_build_backtest_output_returns_expected_columns(weekend_predictions_df: pd.DataFrame) -> None:
+    df = weekend_predictions_df[weekend_predictions_df["made_cut_predicted"]].copy()
+    df["round3_input_source"] = "actual_round1_actual_round2"
+    df["round4_input_source"] = "actual_round1_actual_round2_actual_round3"
+    df["predicted_round3"] = [72.0, 66.0]
+    df["abs_error_round3"] = (df["predicted_round3"] - df["actual_round3"]).abs()
+    df["predicted_total_through_round3"] = (
+        df["predicted_round1"] + df["predicted_round2"] + df["predicted_round3"]
     )
+    df["actual_total_through_round3"] = (
+        df["actual_round1"] + df["actual_round2"] + df["actual_round3"]
+    )
+    df["abs_error_total_through_round3"] = (
+        df["predicted_total_through_round3"] - df["actual_total_through_round3"]
+    ).abs()
+    df["predicted_round4"] = [71.0, 65.0]
+    df["abs_error_round4"] = (df["predicted_round4"] - df["actual_round4"]).abs()
+    df["predicted_total"] = (
+        df["predicted_total_through_round3"] + df["predicted_round4"]
+    )
+    df["actual_total"] = (
+        df["actual_total_through_round3"] + df["actual_round4"]
+    )
+    df["abs_error_total"] = (df["predicted_total"] - df["actual_total"]).abs()
+    df["predicted_rank_through_round3"] = [2, 1]
+    df["predicted_rank_final"] = [2, 1]
 
-    round1_model = DummyRound1Model()
-    round2_model = DummyRound2Model()
-
-    predictions_df = predict_round1(round1_model, inference_df)
-    predictions_df = predict_round2(round2_model, predictions_df, mode="backtest")
-    predictions_df = apply_cut(predictions_df, tournament_name="Masters Tournament")
-    backtest_output_df = build_backtest_output(predictions_df)
+    backtest_output_df = build_backtest_output(df)
 
     expected_columns = [
         "predicted_rank_round1",
         "actual_rank_round1",
         "predicted_rank_through_round2",
         "actual_rank_through_round2",
+        "predicted_rank_through_round3",
+        "predicted_rank_final",
         "player_name_clean",
         "target_tournament",
         "target_start",
@@ -377,25 +627,29 @@ def test_build_backtest_output_returns_expected_columns(sample_inference_df: pd.
         "feature_source_tournament",
         "inference_mode",
         "round1_input_source",
-        "prev_tournament_avg_score",
-        "prev_tournament_total",
-        "prev_tournament_made_cut",
-        "prev_tournament_earnings",
-        "rolling_avg_last_3",
-        "rolling_avg_last_5",
-        "rolling_total_last_3",
-        "made_cut_rate_last_5",
-        "form_index_last_3",
-        "career_tournament_count",
+        "round3_input_source",
+        "round4_input_source",
         "predicted_round1",
         "actual_round1",
         "abs_error_round1",
         "predicted_round2",
         "actual_round2",
         "abs_error_round2",
+        "predicted_round3",
+        "actual_round3",
+        "abs_error_round3",
+        "predicted_round4",
+        "actual_round4",
+        "abs_error_round4",
         "predicted_total_through_round2",
         "actual_total_through_round2",
         "abs_error_total_through_round2",
+        "predicted_total_through_round3",
+        "actual_total_through_round3",
+        "abs_error_total_through_round3",
+        "predicted_total",
+        "actual_total",
+        "abs_error_total",
         "cut_rule_top_n",
         "cut_rule_ties",
         "cut_rule_within_leader_strokes",

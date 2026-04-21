@@ -60,12 +60,21 @@ def load_backtest_df() -> pd.DataFrame:
 def format_metrics(df: pd.DataFrame) -> dict[str, float | int]:
     metrics = {
         "n_players": len(df),
+        "predicted_cut_count": int(df["made_cut_predicted"].sum()) if "made_cut_predicted" in df.columns else 0,
         "mae_round1": float("nan"),
         "rmse_round1": float("nan"),
         "mae_round2": float("nan"),
         "rmse_round2": float("nan"),
+        "mae_round3": float("nan"),
+        "rmse_round3": float("nan"),
+        "mae_round4": float("nan"),
+        "rmse_round4": float("nan"),
         "mae_total_r2": float("nan"),
         "rmse_total_r2": float("nan"),
+        "mae_total_r3": float("nan"),
+        "rmse_total_r3": float("nan"),
+        "mae_total_final": float("nan"),
+        "rmse_total_final": float("nan"),
     }
 
     if "abs_error_round1" in df.columns:
@@ -84,6 +93,26 @@ def format_metrics(df: pd.DataFrame) -> dict[str, float | int]:
             ((df["predicted_round2"] - df["actual_round2"]) ** 2).mean() ** 0.5
         )
 
+    if "abs_error_round3" in df.columns:
+        metrics["mae_round3"] = df["abs_error_round3"].mean()
+
+    if {"predicted_round3", "actual_round3"}.issubset(df.columns):
+        valid = df[["predicted_round3", "actual_round3"]].dropna()
+        if not valid.empty:
+            metrics["rmse_round3"] = (
+                ((valid["predicted_round3"] - valid["actual_round3"]) ** 2).mean() ** 0.5
+            )
+
+    if "abs_error_round4" in df.columns:
+        metrics["mae_round4"] = df["abs_error_round4"].mean()
+
+    if {"predicted_round4", "actual_round4"}.issubset(df.columns):
+        valid = df[["predicted_round4", "actual_round4"]].dropna()
+        if not valid.empty:
+            metrics["rmse_round4"] = (
+                ((valid["predicted_round4"] - valid["actual_round4"]) ** 2).mean() ** 0.5
+            )
+
     if "abs_error_total_through_round2" in df.columns:
         metrics["mae_total_r2"] = df["abs_error_total_through_round2"].mean()
 
@@ -97,12 +126,32 @@ def format_metrics(df: pd.DataFrame) -> dict[str, float | int]:
             ).mean() ** 0.5
         )
 
+    if "abs_error_total_through_round3" in df.columns:
+        metrics["mae_total_r3"] = df["abs_error_total_through_round3"].mean()
+
+    if {"predicted_total_through_round3", "actual_total_through_round3"}.issubset(df.columns):
+        valid = df[["predicted_total_through_round3", "actual_total_through_round3"]].dropna()
+        if not valid.empty:
+            metrics["rmse_total_r3"] = (
+                ((valid["predicted_total_through_round3"] - valid["actual_total_through_round3"]) ** 2).mean() ** 0.5
+            )
+
+    if "abs_error_total" in df.columns:
+        metrics["mae_total_final"] = df["abs_error_total"].mean()
+
+    if {"predicted_total", "actual_total"}.issubset(df.columns):
+        valid = df[["predicted_total", "actual_total"]].dropna()
+        if not valid.empty:
+            metrics["rmse_total_final"] = (
+                ((valid["predicted_total"] - valid["actual_total"]) ** 2).mean() ** 0.5
+            )
+
     return metrics
 
 
 def main() -> None:
     st.title("🏌️ Golf Oracle")
-    st.subheader("Round 1 + Round 2 prediction with separate backtest evaluation")
+    st.subheader("Full round-by-round tournament projection through Round 4")
 
     try:
         prediction_df = load_prediction_df()
@@ -143,44 +192,74 @@ def main() -> None:
         if "round1_input_source" in prediction_df.columns
         else "unknown"
     )
-    st.caption(f"Prediction mode: {inference_mode} | Round 2 input: {round1_input_source}")
+    round3_input_source = (
+        prediction_df["round3_input_source"].iloc[0]
+        if "round3_input_source" in prediction_df.columns
+        else "unknown"
+    )
+    round4_input_source = (
+        prediction_df["round4_input_source"].iloc[0]
+        if "round4_input_source" in prediction_df.columns
+        else "unknown"
+    )
+
+    st.caption(
+        f"Prediction mode: {inference_mode} | "
+        f"Round 2 input: {round1_input_source} | "
+        f"Round 3 input: {round3_input_source} | "
+        f"Round 4 input: {round4_input_source}"
+    )
 
     if backtest_df is not None and not backtest_df.empty:
         metrics = format_metrics(backtest_df)
     else:
         metrics = {
             "n_players": len(prediction_df),
+            "predicted_cut_count": int(prediction_df["made_cut_predicted"].sum()) if "made_cut_predicted" in prediction_df.columns else 0,
             "mae_round1": float("nan"),
             "rmse_round1": float("nan"),
             "mae_round2": float("nan"),
             "rmse_round2": float("nan"),
+            "mae_round3": float("nan"),
+            "rmse_round3": float("nan"),
+            "mae_round4": float("nan"),
+            "rmse_round4": float("nan"),
             "mae_total_r2": float("nan"),
             "rmse_total_r2": float("nan"),
+            "mae_total_r3": float("nan"),
+            "rmse_total_r3": float("nan"),
+            "mae_total_final": float("nan"),
+            "rmse_total_final": float("nan"),
         }
 
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     col1.metric("Players", f"{metrics['n_players']}")
-    col2.metric(
+    col2.metric("Predicted made cut", f"{metrics['predicted_cut_count']}")
+    col3.metric(
+        "Final total MAE",
+        f"{metrics['mae_total_final']:.3f}" if pd.notna(metrics["mae_total_final"]) else "N/A",
+    )
+    col4.metric(
+        "Final total RMSE",
+        f"{metrics['rmse_total_final']:.3f}" if pd.notna(metrics["rmse_total_final"]) else "N/A",
+    )
+
+    col5, col6, col7, col8 = st.columns(4)
+    col5.metric(
         "Round 1 MAE",
         f"{metrics['mae_round1']:.3f}" if pd.notna(metrics["mae_round1"]) else "N/A",
     )
-    col3.metric(
+    col6.metric(
         "Round 2 MAE",
         f"{metrics['mae_round2']:.3f}" if pd.notna(metrics["mae_round2"]) else "N/A",
     )
-
-    col4, col5, col6 = st.columns(3)
-    col4.metric(
-        "Round 1 RMSE",
-        f"{metrics['rmse_round1']:.3f}" if pd.notna(metrics["rmse_round1"]) else "N/A",
+    col7.metric(
+        "Round 3 MAE",
+        f"{metrics['mae_round3']:.3f}" if pd.notna(metrics["mae_round3"]) else "N/A",
     )
-    col5.metric(
-        "Round 2 RMSE",
-        f"{metrics['rmse_round2']:.3f}" if pd.notna(metrics["rmse_round2"]) else "N/A",
-    )
-    col6.metric(
-        "Total R1+R2 MAE",
-        f"{metrics['mae_total_r2']:.3f}" if pd.notna(metrics["mae_total_r2"]) else "N/A",
+    col8.metric(
+        "Round 4 MAE",
+        f"{metrics['mae_round4']:.3f}" if pd.notna(metrics["mae_round4"]) else "N/A",
     )
 
     st.markdown("---")
@@ -201,15 +280,20 @@ def main() -> None:
                 filtered_backtest_df["player_name_clean"].str.contains(player_search, case=False, na=False)
             ].copy()
 
-    st.markdown("### Predicted leaderboard through Round 2")
+    st.markdown("### Predicted final leaderboard")
 
     predicted_cols = [
+        "predicted_rank_final",
+        "predicted_rank_through_round3",
         "predicted_rank_through_round2",
-        "predicted_rank_round1",
         "player_name_clean",
+        "made_cut_predicted",
         "predicted_round1",
         "predicted_round2",
-        "predicted_total_through_round2",
+        "predicted_round3",
+        "predicted_round4",
+        "predicted_total",
+        "cut_line",
         "feature_source_tournament",
         "feature_source_start",
         "rolling_avg_last_3",
@@ -219,9 +303,10 @@ def main() -> None:
     ]
     predicted_cols = [col for col in predicted_cols if col in filtered_prediction_df.columns]
 
-    predicted_view_df = filtered_prediction_df.sort_values(
-        ["predicted_rank_through_round2", "player_name_clean"]
-    ).copy()
+    sort_cols = ["predicted_rank_final", "player_name_clean"]
+    sort_cols = [col for col in sort_cols if col in filtered_prediction_df.columns]
+
+    predicted_view_df = filtered_prediction_df.sort_values(sort_cols).copy()
 
     st.dataframe(
         predicted_view_df[predicted_cols].head(show_top_n),
@@ -231,9 +316,7 @@ def main() -> None:
 
     st.markdown("### Prediction artifact")
     st.dataframe(
-        filtered_prediction_df.sort_values(
-            ["predicted_rank_through_round2", "player_name_clean"]
-        ),
+        filtered_prediction_df.sort_values(sort_cols),
         use_container_width=True,
         hide_index=True,
     )
@@ -249,23 +332,28 @@ def main() -> None:
         st.warning("Backtest artifact is empty.")
         return
 
-    st.markdown("### Actual leaderboard through Round 2")
+    st.markdown("### Actual final leaderboard")
 
-    actual_df = filtered_backtest_df.sort_values(
-        ["actual_rank_through_round2", "player_name_clean"]
-    ).copy()
+    actual_sort_cols = ["actual_rank_final", "actual_total", "player_name_clean"]
+    actual_sort_cols = [col for col in actual_sort_cols if col in filtered_backtest_df.columns]
+
+    actual_df = filtered_backtest_df.sort_values(actual_sort_cols).copy()
 
     actual_cols = [
-        "actual_rank_through_round2",
-        "predicted_rank_through_round2",
+        "actual_rank_final",
+        "predicted_rank_final",
         "player_name_clean",
         "actual_round1",
         "predicted_round1",
         "actual_round2",
         "predicted_round2",
-        "actual_total_through_round2",
-        "predicted_total_through_round2",
-        "abs_error_total_through_round2",
+        "actual_round3",
+        "predicted_round3",
+        "actual_round4",
+        "predicted_round4",
+        "actual_total",
+        "predicted_total",
+        "abs_error_total",
     ]
     actual_cols = [col for col in actual_cols if col in actual_df.columns]
 

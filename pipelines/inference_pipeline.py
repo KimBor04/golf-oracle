@@ -439,6 +439,20 @@ def predict_round4(round4_model, predictions_df: pd.DataFrame, mode: str) -> pd.
             predictions["predicted_total"] - predictions["actual_total"]
         ).abs()
 
+        actual_rank_df = (
+            predictions[["player_name_clean", "actual_total"]]
+            .dropna(subset=["actual_total"])
+            .sort_values(["actual_total", "player_name_clean"], ascending=[True, True])
+            .reset_index(drop=True)
+        )
+        actual_rank_df["actual_rank_final"] = actual_rank_df.index + 1
+
+        predictions = predictions.merge(
+            actual_rank_df[["player_name_clean", "actual_rank_final"]],
+            on="player_name_clean",
+            how="left",
+        )
+
     return predictions
 
 
@@ -484,6 +498,7 @@ def build_backtest_output(predictions: pd.DataFrame) -> pd.DataFrame:
         "actual_rank_through_round2",
         "predicted_rank_through_round3",
         "predicted_rank_final",
+        "actual_rank_final",
         "player_name_clean",
         "target_tournament",
         "target_start",

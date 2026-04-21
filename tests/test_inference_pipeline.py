@@ -507,6 +507,7 @@ def test_predict_round4_backtest_adds_actuals_and_errors(weekend_predictions_df:
         "actual_total",
         "abs_error_total",
         "predicted_rank_final",
+        "actual_rank_final",
     }
 
     assert required_columns.issubset(result.columns)
@@ -608,6 +609,7 @@ def test_build_backtest_output_returns_expected_columns(weekend_predictions_df: 
     df["abs_error_total"] = (df["predicted_total"] - df["actual_total"]).abs()
     df["predicted_rank_through_round3"] = [2, 1]
     df["predicted_rank_final"] = [2, 1]
+    df["actual_rank_final"] = [2, 1]
 
     backtest_output_df = build_backtest_output(df)
 
@@ -618,6 +620,7 @@ def test_build_backtest_output_returns_expected_columns(weekend_predictions_df: 
         "actual_rank_through_round2",
         "predicted_rank_through_round3",
         "predicted_rank_final",
+        "actual_rank_final",
         "player_name_clean",
         "target_tournament",
         "target_start",

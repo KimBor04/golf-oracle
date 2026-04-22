@@ -38,6 +38,14 @@ def make_sample_training_df() -> pd.DataFrame:
             "made_cut_rate_last_5": [1.0, 1.0, 1.0, 0.75, 0.8],
             "form_index_last_3": [71.5, 70.4, 69.9, 71.3, 68.8],
             "career_tournament_count": [1, 2, 3, 4, 5],
+            "round_std_last_5": [0.8, 0.7, 0.9, 1.1, 0.6],
+            "round_std_last_10": [1.0, 0.9, 1.1, 1.3, 0.8],
+            "score_range_last_5": [2.5, 2.0, 2.8, 3.1, 1.8],
+            "best_round_last_10": [68, 67, 66, 69, 65],
+            "worst_round_last_10": [74, 73, 72, 76, 71],
+            "best_total_last_10": [280, 278, 276, 282, 274],
+            "worst_total_last_10": [292, 289, 288, 295, 284],
+            "missed_cut_rate_last_10": [0.1, 0.1, 0.0, 0.2, 0.1],
         }
     )
 

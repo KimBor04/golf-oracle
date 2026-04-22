@@ -122,11 +122,15 @@ def prepare_results_features(results: pd.DataFrame) -> pd.DataFrame:
 
     df["avg_score_played_rounds"] = df[["round1", "round2", "round3", "round4"]].mean(axis=1)
 
+    # event-level ceiling / floor summaries
+    df["best_round_in_event"] = df[["round1", "round2", "round3", "round4"]].min(axis=1)
+    df["worst_round_in_event"] = df[["round1", "round2", "round3", "round4"]].max(axis=1)
+
     df = df.sort_values(["player_name_clean", "start", "tournament"]).reset_index(drop=True)
 
-    # shift by 1 to avoid leakage
     player_group = df.groupby("player_name_clean", group_keys=False)
 
+    # shift by 1 to avoid leakage
     df["prev_tournament_avg_score"] = player_group["avg_score_played_rounds"].shift(1)
     df["prev_tournament_total"] = player_group["total"].shift(1)
     df["prev_tournament_made_cut"] = player_group["made_cut"].shift(1)
@@ -175,6 +179,49 @@ def prepare_results_features(results: pd.DataFrame) -> pd.DataFrame:
 
     df["career_tournament_count"] = player_group.cumcount()
 
+    # --- realism / dispersion features ---
+    df["round_std_last_5"] = (
+        player_group["avg_score_played_rounds"]
+        .transform(lambda s: s.shift(1).rolling(5, min_periods=2).std())
+    )
+
+    df["round_std_last_10"] = (
+        player_group["avg_score_played_rounds"]
+        .transform(lambda s: s.shift(1).rolling(10, min_periods=2).std())
+    )
+
+    df["score_range_last_5"] = (
+        player_group["avg_score_played_rounds"]
+        .transform(lambda s: s.shift(1).rolling(5, min_periods=1).max())
+        - player_group["avg_score_played_rounds"]
+        .transform(lambda s: s.shift(1).rolling(5, min_periods=1).min())
+    )
+
+    df["best_round_last_10"] = (
+        player_group["best_round_in_event"]
+        .transform(lambda s: s.shift(1).rolling(10, min_periods=1).min())
+    )
+
+    df["worst_round_last_10"] = (
+        player_group["worst_round_in_event"]
+        .transform(lambda s: s.shift(1).rolling(10, min_periods=1).max())
+    )
+
+    df["best_total_last_10"] = (
+        player_group["total"]
+        .transform(lambda s: s.shift(1).rolling(10, min_periods=1).min())
+    )
+
+    df["worst_total_last_10"] = (
+        player_group["total"]
+        .transform(lambda s: s.shift(1).rolling(10, min_periods=1).max())
+    )
+
+    df["missed_cut_rate_last_10"] = (
+        player_group["made_cut"]
+        .transform(lambda s: 1.0 - s.shift(1).rolling(10, min_periods=1).mean())
+    )
+
     return df
 
 
@@ -201,6 +248,14 @@ def print_feature_overview(df: pd.DataFrame) -> None:
         "made_cut_rate_last_5",
         "form_index_last_3",
         "career_tournament_count",
+        "round_std_last_5",
+        "round_std_last_10",
+        "score_range_last_5",
+        "best_round_last_10",
+        "worst_round_last_10",
+        "best_total_last_10",
+        "worst_total_last_10",
+        "missed_cut_rate_last_10",
     ]
 
     existing_cols = [c for c in cols_to_show if c in df.columns]
@@ -216,6 +271,14 @@ def print_feature_overview(df: pd.DataFrame) -> None:
         "rolling_avg_last_5",
         "made_cut_rate_last_5",
         "form_index_last_3",
+        "round_std_last_5",
+        "round_std_last_10",
+        "score_range_last_5",
+        "best_round_last_10",
+        "worst_round_last_10",
+        "best_total_last_10",
+        "worst_total_last_10",
+        "missed_cut_rate_last_10",
     ]
     print(df[key_features].isna().mean().sort_values())
 

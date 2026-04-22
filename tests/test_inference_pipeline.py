@@ -78,6 +78,14 @@ def sample_inference_df() -> pd.DataFrame:
             "made_cut_rate_last_5": [1.0, 1.0, 1.0, 1.0, None],
             "form_index_last_3": [70.5, 70.5, 68.5, 68.5, None],
             "career_tournament_count": [1, 1, 1, 1, None],
+            "round_std_last_5": [0.8, 0.8, 0.6, 0.6, None],
+            "round_std_last_10": [1.0, 1.0, 0.9, 0.9, None],
+            "score_range_last_5": [2.5, 2.5, 1.8, 1.8, None],
+            "best_round_last_10": [68, 68, 66, 66, None],
+            "worst_round_last_10": [74, 74, 70, 70, None],
+            "best_total_last_10": [280, 280, 272, 272, None],
+            "worst_total_last_10": [292, 292, 279, 279, None],
+            "missed_cut_rate_last_10": [0.0, 0.0, 0.1, 0.1, None],
         }
     )
 
@@ -131,6 +139,14 @@ def weekend_predictions_df() -> pd.DataFrame:
             "actual_round3": [74.0, 67.0, 76.0],
             "actual_round4": [75.0, 66.0, 77.0],
             "inference_mode": ["live"] * 3,
+            "round_std_last_5": [0.8, 0.6, 1.2],
+            "round_std_last_10": [1.0, 0.9, 1.4],
+            "score_range_last_5": [2.5, 1.8, 3.8],
+            "best_round_last_10": [68.0, 66.0, 69.0],
+            "worst_round_last_10": [74.0, 70.0, 78.0],
+            "best_total_last_10": [280.0, 272.0, 284.0],
+            "worst_total_last_10": [292.0, 279.0, 300.0],
+            "missed_cut_rate_last_10": [0.0, 0.1, 0.5],
         }
     )
 
@@ -312,8 +328,8 @@ def test_predict_round2_backtest_adds_round2_and_total_columns(sample_inference_
     round1_model = DummyRound1Model()
     round2_model = DummyRound2Model()
 
-    predictions_df = predict_round1(round1_model, inference_df)
-    predictions_df = predict_round2(round2_model, predictions_df, mode="backtest")
+    predictions_df = predict_round1(round1_model, inference_df, apply_calibration=False)
+    predictions_df = predict_round2(round2_model, predictions_df, mode="backtest", apply_calibration=False)
 
     required_columns = {
         "predicted_round2",
@@ -352,8 +368,8 @@ def test_predict_round2_live_uses_predicted_round1(sample_inference_df: pd.DataF
     round1_model = DummyRound1Model()
     round2_model = DummyRound2Model()
 
-    predictions_df = predict_round1(round1_model, inference_df)
-    predictions_df = predict_round2(round2_model, predictions_df, mode="live")
+    predictions_df = predict_round1(round1_model, inference_df, apply_calibration=False)
+    predictions_df = predict_round2(round2_model, predictions_df, mode="live", apply_calibration=False)
 
     bob_row = predictions_df[predictions_df["player_name_clean"] == "bob"].iloc[0]
     alice_row = predictions_df[predictions_df["player_name_clean"] == "alice"].iloc[0]
@@ -434,7 +450,7 @@ def test_filter_players_making_cut_keeps_only_true_rows(weekend_predictions_df: 
 def test_predict_round3_only_uses_players_making_cut(weekend_predictions_df: pd.DataFrame) -> None:
     round3_model = DummyRound3Model()
 
-    result = predict_round3(round3_model, weekend_predictions_df, mode="live")
+    result = predict_round3(round3_model, weekend_predictions_df, mode="live", apply_calibration=False)
 
     assert set(result["player_name_clean"]) == {"alice", "bob"}
     assert "charlie" not in set(result["player_name_clean"])
@@ -446,8 +462,13 @@ def test_predict_round3_only_uses_players_making_cut(weekend_predictions_df: pd.
 def test_predict_round3_live_uses_predicted_round2(weekend_predictions_df: pd.DataFrame) -> None:
     round3_model = DummyRound3Model()
 
-    result = predict_round3(round3_model, weekend_predictions_df, mode="live")
-
+    result = predict_round3(
+        round3_model,
+        weekend_predictions_df,
+        mode="live",
+        apply_calibration=False,
+    )
+    
     bob_row = result[result["player_name_clean"] == "bob"].iloc[0]
     alice_row = result[result["player_name_clean"] == "alice"].iloc[0]
 

@@ -34,6 +34,14 @@ BASE_FEATURE_COLUMNS = [
     "made_cut_rate_last_5",
     "form_index_last_3",
     "career_tournament_count",
+    "round_std_last_5",
+    "round_std_last_10",
+    "score_range_last_5",
+    "best_round_last_10",
+    "worst_round_last_10",
+    "best_total_last_10",
+    "worst_total_last_10",
+    "missed_cut_rate_last_10",
 ]
 
 ROUND_FEATURE_CONFIG = {
@@ -41,23 +49,30 @@ ROUND_FEATURE_CONFIG = {
         "target_col": "round1",
         "feature_cols": BASE_FEATURE_COLUMNS,
         "model_path": ROUND1_MODEL_PATH,
+        "calibration_alpha": 1.8,
     },
     "round2": {
         "target_col": "round2",
         "feature_cols": BASE_FEATURE_COLUMNS + ["round1"],
         "model_path": ROUND2_MODEL_PATH,
+        "calibration_alpha": 1.6,
     },
     "round3": {
         "target_col": "round3",
         "feature_cols": BASE_FEATURE_COLUMNS + ["round1", "round2"],
         "model_path": ROUND3_MODEL_PATH,
+        "calibration_alpha": 1.5,
     },
     "round4": {
         "target_col": "round4",
         "feature_cols": BASE_FEATURE_COLUMNS + ["round1", "round2", "round3"],
         "model_path": ROUND4_MODEL_PATH,
+        "calibration_alpha": 1.4,
     },
 }
+
+ROUND_SCORE_MIN = 55.0
+ROUND_SCORE_MAX = 95.0
 
 
 def ensure_directories() -> None:
@@ -177,16 +192,41 @@ def train_model(X_train: pd.DataFrame, y_train: pd.Series) -> XGBRegressor:
     return model
 
 
-def evaluate_model(model: XGBRegressor, X_test: pd.DataFrame, y_test: pd.Series) -> dict:
-    preds = model.predict(X_test)
+def calibrate_predictions(
+    preds: np.ndarray,
+    alpha: float,
+    min_score: float = ROUND_SCORE_MIN,
+    max_score: float = ROUND_SCORE_MAX,
+) -> np.ndarray:
+    preds = np.asarray(preds, dtype=float)
+    pred_mean = preds.mean()
 
-    mae = mean_absolute_error(y_test, preds)
-    rmse = mean_squared_error(y_test, preds) ** 0.5
+    calibrated = pred_mean + alpha * (preds - pred_mean)
+    calibrated = np.clip(calibrated, min_score, max_score)
+
+    return calibrated
+
+
+def evaluate_model(
+    model: XGBRegressor,
+    X_test: pd.DataFrame,
+    y_test: pd.Series,
+    round_name: str,
+) -> dict:
+    raw_preds = model.predict(X_test)
+
+    alpha = ROUND_FEATURE_CONFIG[round_name]["calibration_alpha"]
+    calibrated_preds = calibrate_predictions(raw_preds, alpha=alpha)
+
+    mae = mean_absolute_error(y_test, calibrated_preds)
+    rmse = mean_squared_error(y_test, calibrated_preds) ** 0.5
 
     return {
         "mae": float(mae),
         "rmse": float(rmse),
-        "predictions": preds,
+        "predictions": calibrated_preds,
+        "raw_predictions": raw_preds,
+        "calibration_alpha": float(alpha),
     }
 
 
@@ -214,6 +254,9 @@ def log_run_to_mlflow(
         mlflow.log_param("train_start_max", str(meta_train["start"].max()))
         mlflow.log_param("test_start_min", str(meta_test["start"].min()))
         mlflow.log_param("test_start_max", str(meta_test["start"].max()))
+        mlflow.log_param("calibration_alpha", results["calibration_alpha"])
+        mlflow.log_param("round_score_min_clip", ROUND_SCORE_MIN)
+        mlflow.log_param("round_score_max_clip", ROUND_SCORE_MAX)
 
         mlflow.log_metric("mae", results["mae"])
         mlflow.log_metric("rmse", results["rmse"])
@@ -228,10 +271,31 @@ def log_run_to_mlflow(
         )
 
 
+def print_distribution_diagnostics(
+    y_test: pd.Series,
+    preds: np.ndarray,
+    raw_preds: np.ndarray,
+) -> None:
+    preds_series = pd.Series(preds)
+    raw_preds_series = pd.Series(raw_preds)
+
+    print("\nDistribution diagnostics:")
+    print(f"Actual mean:          {y_test.mean():.4f}")
+    print(f"Raw predicted mean:   {raw_preds_series.mean():.4f}")
+    print(f"Calibrated mean:      {preds_series.mean():.4f}")
+    print(f"Actual std:           {y_test.std():.4f}")
+    print(f"Raw predicted std:    {raw_preds_series.std():.4f}")
+    print(f"Calibrated std:       {preds_series.std():.4f}")
+    print(f"Actual min/max:       {y_test.min():.4f} / {y_test.max():.4f}")
+    print(f"Raw predicted min/max:{raw_preds_series.min():.4f} / {raw_preds_series.max():.4f}")
+    print(f"Calibrated min/max:   {preds_series.min():.4f} / {preds_series.max():.4f}")
+
+
 def print_summary(
     round_name: str,
     X_train: pd.DataFrame,
     X_test: pd.DataFrame,
+    y_test: pd.Series,
     meta_test: pd.DataFrame,
     results: dict,
 ) -> None:
@@ -246,8 +310,16 @@ def print_summary(
     print("\nMetrics:")
     print(f"MAE:  {results['mae']:.4f}")
     print(f"RMSE: {results['rmse']:.4f}")
+    print(f"Calibration alpha: {results['calibration_alpha']:.2f}")
+
+    print_distribution_diagnostics(
+        y_test=y_test,
+        preds=results["predictions"],
+        raw_preds=results["raw_predictions"],
+    )
 
     preview = meta_test.copy()
+    preview[f"raw_prediction_{round_name}"] = results["raw_predictions"]
     preview[f"prediction_{round_name}"] = results["predictions"]
     print("\nSample predictions:")
     print(preview.head(10))
@@ -264,9 +336,9 @@ def run_training_for_round(round_name: str) -> None:
     X_train, X_test, y_train, y_test, meta_train, meta_test = time_split(X, y, meta)
 
     model = train_model(X_train, y_train)
-    results = evaluate_model(model, X_test, y_test)
+    results = evaluate_model(model, X_test, y_test, round_name=round_name)
 
-    print_summary(round_name, X_train, X_test, meta_test, results)
+    print_summary(round_name, X_train, X_test, y_test, meta_test, results)
 
     joblib.dump(model, model_path)
     print(f"\nSaved model to: {model_path}")

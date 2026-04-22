@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import joblib
+import numpy as np
 import pandas as pd
 
 from src.config import get_cut_rule
@@ -38,11 +39,29 @@ ROUND1_FEATURE_COLUMNS = [
     "made_cut_rate_last_5",
     "form_index_last_3",
     "career_tournament_count",
+    "round_std_last_5",
+    "round_std_last_10",
+    "score_range_last_5",
+    "best_round_last_10",
+    "worst_round_last_10",
+    "best_total_last_10",
+    "worst_total_last_10",
+    "missed_cut_rate_last_10",
 ]
 
 ROUND2_FEATURE_COLUMNS = ROUND1_FEATURE_COLUMNS + ["round1"]
 ROUND3_FEATURE_COLUMNS = ROUND1_FEATURE_COLUMNS + ["round1", "round2"]
 ROUND4_FEATURE_COLUMNS = ROUND1_FEATURE_COLUMNS + ["round1", "round2", "round3"]
+
+ROUND_CALIBRATION_ALPHA = {
+    "round1": 1.8,
+    "round2": 1.6,
+    "round3": 1.5,
+    "round4": 1.4,
+}
+
+ROUND_SCORE_MIN = 55.0
+ROUND_SCORE_MAX = 95.0
 
 
 def load_features() -> pd.DataFrame:
@@ -79,6 +98,36 @@ def load_model(model_path):
     if not model_path.exists():
         raise FileNotFoundError(f"Model file not found: {model_path}")
     return joblib.load(model_path)
+
+
+def calibrate_predictions(
+    preds: np.ndarray,
+    alpha: float,
+    min_score: float = ROUND_SCORE_MIN,
+    max_score: float = ROUND_SCORE_MAX,
+) -> np.ndarray:
+    preds = np.asarray(preds, dtype=float)
+    pred_mean = preds.mean()
+
+    calibrated = pred_mean + alpha * (preds - pred_mean)
+    calibrated = np.clip(calibrated, min_score, max_score)
+
+    return calibrated
+
+
+def predict_with_calibration(
+    model,
+    X: pd.DataFrame,
+    round_name: str,
+    apply_calibration: bool = True,
+) -> np.ndarray:
+    raw_preds = model.predict(X)
+
+    if not apply_calibration:
+        return raw_preds
+
+    alpha = ROUND_CALIBRATION_ALPHA[round_name]
+    return calibrate_predictions(raw_preds, alpha=alpha)
 
 
 def get_target_field(df: pd.DataFrame, tournament: str, start_date: str) -> pd.DataFrame:
@@ -233,11 +282,20 @@ def prepare_round4_features(predictions_df: pd.DataFrame, mode: str) -> pd.DataF
     return predictions
 
 
-def predict_round1(round1_model, inference_df: pd.DataFrame) -> pd.DataFrame:
+def predict_round1(
+    round1_model,
+    inference_df: pd.DataFrame,
+    apply_calibration: bool = True,
+) -> pd.DataFrame:
     X = inference_df[ROUND1_FEATURE_COLUMNS].copy()
 
     predictions = inference_df.copy()
-    predictions["predicted_round1"] = round1_model.predict(X)
+    predictions["predicted_round1"] = predict_with_calibration(
+        round1_model,
+        X,
+        round_name="round1",
+        apply_calibration=apply_calibration,
+    )
     predictions["abs_error_round1"] = (
         predictions["predicted_round1"] - predictions["actual_round1"]
     ).abs()
@@ -264,11 +322,21 @@ def predict_round1(round1_model, inference_df: pd.DataFrame) -> pd.DataFrame:
     return predictions
 
 
-def predict_round2(round2_model, predictions_df: pd.DataFrame, mode: str) -> pd.DataFrame:
+def predict_round2(
+    round2_model,
+    predictions_df: pd.DataFrame,
+    mode: str,
+    apply_calibration: bool = True,
+) -> pd.DataFrame:
     predictions = prepare_round2_features(predictions_df, mode=mode)
 
     X = predictions[ROUND2_FEATURE_COLUMNS].copy()
-    predictions["predicted_round2"] = round2_model.predict(X)
+    predictions["predicted_round2"] = predict_with_calibration(
+        round2_model,
+        X,
+        round_name="round2",
+        apply_calibration=apply_calibration,
+    )
 
     predictions["predicted_total_through_round2"] = (
         predictions["predicted_round1"] + predictions["predicted_round2"]
@@ -370,12 +438,22 @@ def filter_players_making_cut(predictions_df: pd.DataFrame) -> pd.DataFrame:
     return predictions_df[predictions_df["made_cut_predicted"]].copy()
 
 
-def predict_round3(round3_model, predictions_df: pd.DataFrame, mode: str) -> pd.DataFrame:
+def predict_round3(
+    round3_model,
+    predictions_df: pd.DataFrame,
+    mode: str,
+    apply_calibration: bool = True,
+) -> pd.DataFrame:
     predictions = filter_players_making_cut(predictions_df)
     predictions = prepare_round3_features(predictions, mode=mode)
 
     X = predictions[ROUND3_FEATURE_COLUMNS].copy()
-    predictions["predicted_round3"] = round3_model.predict(X)
+    predictions["predicted_round3"] = predict_with_calibration(
+        round3_model,
+        X,
+        round_name="round3",
+        apply_calibration=apply_calibration,
+    )
 
     predictions["predicted_total_through_round3"] = (
         predictions["predicted_round1"]
@@ -405,11 +483,21 @@ def predict_round3(round3_model, predictions_df: pd.DataFrame, mode: str) -> pd.
     return predictions
 
 
-def predict_round4(round4_model, predictions_df: pd.DataFrame, mode: str) -> pd.DataFrame:
+def predict_round4(
+    round4_model,
+    predictions_df: pd.DataFrame,
+    mode: str,
+    apply_calibration: bool = True,
+) -> pd.DataFrame:
     predictions = prepare_round4_features(predictions_df, mode=mode)
 
     X = predictions[ROUND4_FEATURE_COLUMNS].copy()
-    predictions["predicted_round4"] = round4_model.predict(X)
+    predictions["predicted_round4"] = predict_with_calibration(
+        round4_model,
+        X,
+        round_name="round4",
+        apply_calibration=apply_calibration,
+    )
 
     predictions["predicted_total"] = (
         predictions["predicted_round1"]

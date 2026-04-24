@@ -8,6 +8,7 @@ from pipelines.training_pipeline import (
     ROUND_FEATURE_CONFIG,
 )
 
+
 def make_sample_training_df() -> pd.DataFrame:
     return pd.DataFrame(
         {
@@ -38,6 +39,12 @@ def make_sample_training_df() -> pd.DataFrame:
             "made_cut_rate_last_5": [1.0, 1.0, 1.0, 0.75, 0.8],
             "form_index_last_3": [71.5, 70.4, 69.9, 71.3, 68.8],
             "career_tournament_count": [1, 2, 3, 4, 5],
+            "days_since_last_tournament": [10, 12, 14, 21, 9],
+            "tournaments_last_30": [1, 2, 2, 3, 1],
+            "tournaments_last_60": [1, 2, 3, 4, 2],
+            "tournaments_last_90": [1, 2, 3, 4, 3],
+            "made_cut_streak": [1, 2, 3, 0, 1],
+            "missed_cut_streak": [0, 0, 0, 1, 0],
             "round_std_last_5": [0.8, 0.7, 0.9, 1.1, 0.6],
             "round_std_last_10": [1.0, 0.9, 1.1, 1.3, 0.8],
             "score_range_last_5": [2.5, 2.0, 2.8, 3.1, 1.8],
@@ -153,6 +160,7 @@ def test_time_split_sorts_even_if_input_is_unsorted() -> None:
     combined_dates = meta_train["start"].tolist() + meta_test["start"].tolist()
     assert combined_dates == sorted(combined_dates)
 
+
 def test_prepare_training_data_round2_matches_configured_feature_columns() -> None:
     df = make_sample_training_df()
 
@@ -160,12 +168,14 @@ def test_prepare_training_data_round2_matches_configured_feature_columns() -> No
 
     assert X.columns.tolist() == ROUND_FEATURE_CONFIG["round2"]["feature_cols"]
 
+
 def test_prepare_training_data_round1_does_not_include_round1_as_feature() -> None:
     df = make_sample_training_df()
 
     X, _, _ = prepare_training_data(df, "round1")
 
     assert "round1" not in X.columns
+
 
 def test_time_split_raises_for_invalid_test_size() -> None:
     df = make_sample_training_df()
@@ -176,6 +186,7 @@ def test_time_split_raises_for_invalid_test_size() -> None:
 
     with pytest.raises(ValueError, match="test_size must be between 0 and 1"):
         time_split(X, y, meta, test_size=1)
+
 
 def test_time_split_raises_when_split_would_create_empty_partition() -> None:
     df = make_sample_training_df().head(1).copy()

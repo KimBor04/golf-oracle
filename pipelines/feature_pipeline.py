@@ -105,6 +105,47 @@ def save_clean_inputs(results: pd.DataFrame, stats: pd.DataFrame) -> None:
     print(f"Saved cleaned stats to: {CLEAN_STATS_PATH}")
 
 
+def _compute_streaks_from_shifted_binary(series: pd.Series, target_value: int) -> pd.Series:
+    streaks: list[float] = []
+    current_streak = 0
+
+    for value in series:
+        if pd.isna(value):
+            streaks.append(np.nan)
+        elif value == target_value:
+            current_streak += 1
+            streaks.append(float(current_streak))
+        else:
+            current_streak = 0
+            streaks.append(0.0)
+
+    return pd.Series(streaks, index=series.index, dtype=float)
+
+
+def compute_streak_before_event(series: pd.Series, target_value: int) -> pd.Series:
+    streaks = []
+    current_streak = 0
+
+    for i in range(len(series)):
+        if i == 0:
+            streaks.append(np.nan)
+            continue
+
+        prev_value = series.iloc[i - 1]
+
+        if pd.isna(prev_value):
+            streaks.append(np.nan)
+            current_streak = 0
+        elif prev_value == target_value:
+            current_streak += 1
+            streaks.append(float(current_streak))
+        else:
+            current_streak = 0
+            streaks.append(0.0)
+
+    return pd.Series(streaks, index=series.index, dtype=float)
+
+
 def prepare_results_features(results: pd.DataFrame) -> pd.DataFrame:
     df = results.copy()
 
@@ -179,6 +220,48 @@ def prepare_results_features(results: pd.DataFrame) -> pd.DataFrame:
 
     df["career_tournament_count"] = player_group.cumcount()
 
+    # --- new recency features ---
+    df["days_since_last_tournament"] = (
+        player_group["start"]
+        .transform(lambda s: s.diff().dt.days)
+    )
+
+    def count_prior_events_within_days(start_series: pd.Series, window_days: int) -> pd.Series:
+        starts = pd.to_datetime(start_series)
+        counts = []
+
+        for i in range(len(starts)):
+            current_start = starts.iloc[i]
+            prior_starts = starts.iloc[:i]
+
+            if len(prior_starts) == 0 or pd.isna(current_start):
+                counts.append(np.nan)
+                continue
+
+            day_diffs = (current_start - prior_starts).dt.days
+            count = ((day_diffs > 0) & (day_diffs <= window_days)).sum()
+            counts.append(float(count))
+
+        return pd.Series(counts, index=start_series.index, dtype=float)
+
+    df["tournaments_last_30"] = player_group["start"].transform(
+        lambda s: count_prior_events_within_days(s, 30)
+    )
+    df["tournaments_last_60"] = player_group["start"].transform(
+        lambda s: count_prior_events_within_days(s, 60)
+    )
+    df["tournaments_last_90"] = player_group["start"].transform(
+        lambda s: count_prior_events_within_days(s, 90)
+    )
+
+    df["made_cut_streak"] = player_group["made_cut"].transform(
+        lambda s: compute_streak_before_event(s, target_value=1)
+    )
+
+    df["missed_cut_streak"] = player_group["made_cut"].transform(
+        lambda s: compute_streak_before_event(s, target_value=0)
+    )
+
     # --- realism / dispersion features ---
     df["round_std_last_5"] = (
         player_group["avg_score_played_rounds"]
@@ -248,6 +331,12 @@ def print_feature_overview(df: pd.DataFrame) -> None:
         "made_cut_rate_last_5",
         "form_index_last_3",
         "career_tournament_count",
+        "days_since_last_tournament",
+        "tournaments_last_30",
+        "tournaments_last_60",
+        "tournaments_last_90",
+        "made_cut_streak",
+        "missed_cut_streak",
         "round_std_last_5",
         "round_std_last_10",
         "score_range_last_5",
@@ -271,6 +360,12 @@ def print_feature_overview(df: pd.DataFrame) -> None:
         "rolling_avg_last_5",
         "made_cut_rate_last_5",
         "form_index_last_3",
+        "days_since_last_tournament",
+        "tournaments_last_30",
+        "tournaments_last_60",
+        "tournaments_last_90",
+        "made_cut_streak",
+        "missed_cut_streak",
         "round_std_last_5",
         "round_std_last_10",
         "score_range_last_5",

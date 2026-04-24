@@ -127,3 +127,82 @@ def test_made_cut_is_derived_correctly(sample_results: pd.DataFrame) -> None:
 
     assert player_b.loc[0, "made_cut"] == 0
     assert player_b.loc[1, "made_cut"] == 1
+
+
+def test_days_since_last_tournament_uses_previous_event_date(sample_results: pd.DataFrame) -> None:
+    features = prepare_results_features(sample_results).copy()
+
+    player_a = (
+        features[features["player_name_clean"] == "player_a"]
+        .sort_values("start")
+        .reset_index(drop=True)
+    )
+
+    assert pd.isna(player_a.loc[0, "days_since_last_tournament"])
+    assert player_a.loc[1, "days_since_last_tournament"] == 14
+    assert player_a.loc[2, "days_since_last_tournament"] == 17
+
+
+def test_tournaments_last_30_60_90_use_only_prior_events(sample_results: pd.DataFrame) -> None:
+    features = prepare_results_features(sample_results).copy()
+
+    player_a = (
+        features[features["player_name_clean"] == "player_a"]
+        .sort_values("start")
+        .reset_index(drop=True)
+    )
+
+    assert pd.isna(player_a.loc[0, "tournaments_last_30"])
+    assert pd.isna(player_a.loc[0, "tournaments_last_60"])
+    assert pd.isna(player_a.loc[0, "tournaments_last_90"])
+
+    assert player_a.loc[1, "tournaments_last_30"] == 1
+    assert player_a.loc[1, "tournaments_last_60"] == 1
+    assert player_a.loc[1, "tournaments_last_90"] == 1
+
+    assert player_a.loc[2, "tournaments_last_30"] == 1
+    assert player_a.loc[2, "tournaments_last_60"] == 2
+    assert player_a.loc[2, "tournaments_last_90"] == 2
+
+
+def test_made_cut_streak_uses_only_previous_events(sample_results: pd.DataFrame) -> None:
+    features = prepare_results_features(sample_results).copy()
+
+    player_a = (
+        features[features["player_name_clean"] == "player_a"]
+        .sort_values("start")
+        .reset_index(drop=True)
+    )
+
+    assert pd.isna(player_a.loc[0, "made_cut_streak"])
+    assert player_a.loc[1, "made_cut_streak"] == 1
+    assert player_a.loc[2, "made_cut_streak"] == 2
+
+
+def test_missed_cut_streak_uses_only_previous_events(sample_results: pd.DataFrame) -> None:
+    features = prepare_results_features(sample_results).copy()
+
+    player_b = (
+        features[features["player_name_clean"] == "player_b"]
+        .sort_values("start")
+        .reset_index(drop=True)
+    )
+
+    assert pd.isna(player_b.loc[0, "missed_cut_streak"])
+    assert player_b.loc[1, "missed_cut_streak"] == 1
+
+
+def test_streaks_reset_correctly_when_previous_event_changes_outcome(sample_results: pd.DataFrame) -> None:
+    features = prepare_results_features(sample_results).copy()
+
+    player_b = (
+        features[features["player_name_clean"] == "player_b"]
+        .sort_values("start")
+        .reset_index(drop=True)
+    )
+
+    assert pd.isna(player_b.loc[0, "made_cut_streak"])
+    assert player_b.loc[1, "made_cut_streak"] == 0
+
+    assert pd.isna(player_b.loc[0, "missed_cut_streak"])
+    assert player_b.loc[1, "missed_cut_streak"] == 1

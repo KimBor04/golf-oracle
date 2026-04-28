@@ -1,9 +1,17 @@
 from pathlib import Path
+import argparse
 import re
 import unicodedata
+import sys
 
 import numpy as np
 import pandas as pd
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.append(str(PROJECT_ROOT))
+
+from src.freewebapi_golf_client import fetch_live_leaderboard_features
+from src.paths import API_CACHE_DIR, LIVE_FEATURES_PATH
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +29,7 @@ HISTORICAL_FEATURES_PATH = FEATURES_DIR / "historical_features.parquet"
 
 def ensure_directories() -> None:
     FEATURES_DIR.mkdir(parents=True, exist_ok=True)
+    API_CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -378,7 +387,52 @@ def print_feature_overview(df: pd.DataFrame) -> None:
     print(df[key_features].isna().mean().sort_values())
 
 
-def main() -> None:
+def save_live_leaderboard_features(
+    tournament_name: str,
+    year: int,
+    round_id: int,
+    use_cache: bool = True,
+) -> None:
+    live_features = fetch_live_leaderboard_features(
+        tournament_name=tournament_name,
+        year=year,
+        round_id=round_id,
+        org_id=1,
+        use_cache=use_cache,
+    )
+
+    live_features.to_parquet(LIVE_FEATURES_PATH, index=False)
+
+    print("\n=== LIVE FREEWEBAPI GOLF LEADERBOARD ===")
+    print("Tournament:", tournament_name)
+    print("Year:", year)
+    print("Round:", round_id)
+    print("Shape:", live_features.shape)
+    print("Columns:", live_features.columns.tolist())
+
+    preview_cols = [
+        "player_name_clean",
+        "target_tournament",
+        "tourn_id",
+        "season",
+        "round_id",
+    ]
+    existing_preview_cols = [col for col in preview_cols if col in live_features.columns]
+
+    if existing_preview_cols:
+        print("\nSample live rows:")
+        print(live_features[existing_preview_cols].head(10))
+
+    print(f"\nSaved live features to: {LIVE_FEATURES_PATH}")
+
+
+def main(
+    fetch_live: bool = False,
+    live_tournament: str = "Masters Tournament",
+    live_year: int = 2024,
+    live_round: int = 1,
+    refresh_live_cache: bool = False,
+) -> None:
     ensure_directories()
 
     results = load_results()
@@ -400,6 +454,53 @@ def main() -> None:
     historical_features.to_parquet(HISTORICAL_FEATURES_PATH, index=False)
     print(f"\nSaved historical features to: {HISTORICAL_FEATURES_PATH}")
 
+    if fetch_live:
+        save_live_leaderboard_features(
+            tournament_name=live_tournament,
+            year=live_year,
+            round_id=live_round,
+            use_cache=not refresh_live_cache,
+        )
+
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+
+    parser.add_argument(
+        "--fetch-live",
+        action="store_true",
+        help="Fetch FreeWebAPI Golf leaderboard data and save it to live_features.parquet.",
+    )
+    parser.add_argument(
+        "--live-tournament",
+        type=str,
+        default="Masters Tournament",
+        help="Tournament name to fetch from the FreeWebAPI Golf schedule/leaderboard.",
+    )
+    parser.add_argument(
+        "--live-year",
+        type=int,
+        default=2024,
+        help="Tournament year to fetch.",
+    )
+    parser.add_argument(
+        "--live-round",
+        type=int,
+        default=1,
+        help="Round ID to fetch from the leaderboard endpoint.",
+    )
+    parser.add_argument(
+        "--refresh-live-cache",
+        action="store_true",
+        help="Ignore cached API JSON and force a fresh API request.",
+    )
+
+    args = parser.parse_args()
+
+    main(
+        fetch_live=args.fetch_live,
+        live_tournament=args.live_tournament,
+        live_year=args.live_year,
+        live_round=args.live_round,
+        refresh_live_cache=args.refresh_live_cache,
+    )

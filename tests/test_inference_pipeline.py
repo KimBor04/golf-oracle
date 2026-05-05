@@ -78,6 +78,12 @@ def sample_inference_df() -> pd.DataFrame:
             "made_cut_rate_last_5": [1.0, 1.0, 1.0, 1.0, None],
             "form_index_last_3": [70.5, 70.5, 68.5, 68.5, None],
             "career_tournament_count": [1, 1, 1, 1, None],
+            "days_since_last_tournament": [14, 14, 21, 21, None],
+            "tournaments_last_30": [1, 1, 1, 1, None],
+            "tournaments_last_60": [2, 2, 2, 2, None],
+            "tournaments_last_90": [3, 3, 3, 3, None],
+            "made_cut_streak": [1, 1, 2, 2, None],
+            "missed_cut_streak": [0, 0, 0, 0, None],
             "round_std_last_5": [0.8, 0.8, 0.6, 0.6, None],
             "round_std_last_10": [1.0, 1.0, 0.9, 0.9, None],
             "score_range_last_5": [2.5, 2.5, 1.8, 1.8, None],
@@ -136,6 +142,12 @@ def weekend_predictions_df() -> pd.DataFrame:
             "made_cut_rate_last_5": [1.0, 1.0, 0.4],
             "form_index_last_3": [70.5, 68.5, 71.5],
             "career_tournament_count": [10.0, 8.0, 3.0],
+            "days_since_last_tournament": [14.0, 21.0, 7.0],
+            "tournaments_last_30": [1.0, 1.0, 2.0],
+            "tournaments_last_60": [2.0, 2.0, 3.0],
+            "tournaments_last_90": [3.0, 3.0, 4.0],
+            "made_cut_streak": [3.0, 2.0, 0.0],
+            "missed_cut_streak": [0.0, 0.0, 1.0],
             "actual_round3": [74.0, 67.0, 76.0],
             "actual_round4": [75.0, 66.0, 77.0],
             "inference_mode": ["live"] * 3,
@@ -203,6 +215,20 @@ def test_build_pre_tournament_feature_rows_uses_latest_history_row(
             "made_cut_rate_last_5": [0.0],
             "form_index_last_3": [74.5],
             "career_tournament_count": [0],
+            "days_since_last_tournament": [30],
+            "tournaments_last_30": [1],
+            "tournaments_last_60": [1],
+            "tournaments_last_90": [1],
+            "made_cut_streak": [0],
+            "missed_cut_streak": [1],
+            "round_std_last_5": [1.5],
+            "round_std_last_10": [2.0],
+            "score_range_last_5": [6.0],
+            "best_round_last_10": [72],
+            "worst_round_last_10": [78],
+            "best_total_last_10": [296],
+            "worst_total_last_10": [306],
+            "missed_cut_rate_last_10": [1.0],
         }
     )
 
@@ -468,7 +494,7 @@ def test_predict_round3_live_uses_predicted_round2(weekend_predictions_df: pd.Da
         mode="live",
         apply_calibration=False,
     )
-    
+
     bob_row = result[result["player_name_clean"] == "bob"].iloc[0]
     alice_row = result[result["player_name_clean"] == "alice"].iloc[0]
 

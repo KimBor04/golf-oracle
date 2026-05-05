@@ -36,6 +36,11 @@ TARGET_TOURNAMENT = "Masters Tournament"
 TARGET_START_DATE = "2025-04-10"
 INFERENCE_MODE = "live"  # allowed: "live", "backtest"
 
+# Field source options:
+# - "historical": use field from historical_features.parquet
+# - "api_fields": use field from features/api_fields_<year>.parquet
+FIELD_SOURCE = "historical"
+
 ROUND1_FEATURE_COLUMNS = [
     "season",
     "prev_tournament_avg_score",
@@ -149,8 +154,8 @@ def get_target_field(df: pd.DataFrame, tournament: str, start_date: str) -> pd.D
     target_start = pd.to_datetime(start_date)
 
     field_df = df[
-        (df["tournament"] == tournament) &
-        (df["start"] == target_start)
+        (df["tournament"] == tournament)
+        & (df["start"] == target_start)
     ].copy()
 
     if field_df.empty:
@@ -170,6 +175,197 @@ def get_target_field(df: pd.DataFrame, tournament: str, start_date: str) -> pd.D
     )
 
     return field_df
+
+
+def api_fields_path_for_year(year: int) -> Path:
+    return FEATURES_DIR / f"api_fields_{year}.parquet"
+
+
+def load_api_fields(year: int) -> pd.DataFrame:
+    api_fields_path = api_fields_path_for_year(year)
+
+    if not api_fields_path.exists():
+        raise FileNotFoundError(
+            f"API fields file not found: {api_fields_path}\n"
+            "Run the FreeWebAPI field backfill first, for example:\n"
+            f"python pipelines/freewebapi_backfill.py --year {year} "
+            "--mode fields --next-events 3 --max-api-calls 3"
+        )
+
+    df = pd.read_parquet(api_fields_path)
+
+    required_columns = {
+        "player_name_clean",
+        "target_tournament",
+        "tourn_id",
+        "season",
+        "round_id",
+    }
+    missing = required_columns - set(df.columns)
+    if missing:
+        raise ValueError(f"Missing required columns in API fields file: {sorted(missing)}")
+
+    df = df.copy()
+
+    if "api_start_date" in df.columns:
+        df["api_start_date"] = pd.to_datetime(df["api_start_date"], errors="coerce")
+
+    if "api_end_date" in df.columns:
+        df["api_end_date"] = pd.to_datetime(df["api_end_date"], errors="coerce")
+
+    return df
+
+
+def get_target_field_from_api_fields(
+    api_fields_df: pd.DataFrame,
+    tournament: str,
+    start_date: str,
+) -> pd.DataFrame:
+    target_start = pd.to_datetime(start_date)
+    target_year = int(target_start.year)
+
+    field_df = api_fields_df.copy()
+
+    field_df = field_df[field_df["season"].astype(int) == target_year].copy()
+    field_df = field_df[field_df["target_tournament"] == tournament].copy()
+
+    if "api_start_date" in field_df.columns and field_df["api_start_date"].notna().any():
+        field_df = field_df[field_df["api_start_date"] == target_start].copy()
+
+    if "api_record_type" in field_df.columns:
+        field_df = field_df[field_df["api_record_type"] == "future_field"].copy()
+
+    if "field_cache_status" in field_df.columns:
+        available_rows = field_df[field_df["field_cache_status"] == "available"].copy()
+
+        if not available_rows.empty:
+            field_df = available_rows
+
+    field_df = field_df[
+        field_df["player_name_clean"].notna()
+        & (field_df["player_name_clean"].astype(str).str.strip() != "")
+    ].copy()
+
+    if field_df.empty:
+        available = (
+            api_fields_df[["target_tournament", "season"]]
+            .drop_duplicates()
+            .sort_values(["season", "target_tournament"])
+        )
+        raise ValueError(
+            f"No API field rows found for tournament='{tournament}' and start='{start_date}'.\n"
+            f"Available API field tournaments:\n{available.to_string(index=False)}"
+        )
+
+    field_df = field_df.sort_values(["player_name_clean"]).drop_duplicates(
+        subset=["player_name_clean"],
+        keep="first",
+    )
+
+    # Convert API field rows into the same shape expected by
+    # build_pre_tournament_feature_rows().
+    field_df["tournament"] = field_df["target_tournament"]
+    field_df["start"] = target_start
+    field_df["season"] = target_year
+
+    # API field rows do not contain actual round scores yet.
+    # These are set to NA so prediction artifacts can still be built safely.
+    for round_col in ["round1", "round2", "round3", "round4"]:
+        if round_col not in field_df.columns:
+            field_df[round_col] = pd.NA
+
+    return field_df
+
+
+def get_target_field_for_source(
+    historical_df: pd.DataFrame,
+    tournament: str,
+    start_date: str,
+    field_source: str,
+) -> pd.DataFrame:
+    if field_source == "historical":
+        return get_target_field(
+            df=historical_df,
+            tournament=tournament,
+            start_date=start_date,
+        )
+
+    if field_source == "api_fields":
+        target_year = int(pd.to_datetime(start_date).year)
+        api_fields_df = load_api_fields(year=target_year)
+
+        return get_target_field_from_api_fields(
+            api_fields_df=api_fields_df,
+            tournament=tournament,
+            start_date=start_date,
+        )
+
+    raise ValueError(
+        f"Invalid FIELD_SOURCE='{field_source}'. "
+        "Expected one of: ['historical', 'api_fields']."
+    )
+
+
+def has_backtest_actuals(predictions_df: pd.DataFrame) -> bool:
+    required_actual_cols = ["actual_round1", "actual_round2", "actual_round3", "actual_round4"]
+
+    if not set(required_actual_cols).issubset(predictions_df.columns):
+        return False
+
+    actuals = predictions_df[required_actual_cols].apply(pd.to_numeric, errors="coerce")
+    return actuals.notna().any().any()
+
+
+def build_empty_backtest_output() -> pd.DataFrame:
+    output_columns = [
+        "predicted_rank_round1",
+        "actual_rank_round1",
+        "predicted_rank_through_round2",
+        "actual_rank_through_round2",
+        "predicted_rank_through_round3",
+        "predicted_rank_final",
+        "actual_rank_final",
+        "player_name_clean",
+        "target_tournament",
+        "target_start",
+        "target_season",
+        "feature_source_season",
+        "feature_source_start",
+        "feature_source_tournament",
+        "inference_mode",
+        "round1_input_source",
+        "round3_input_source",
+        "round4_input_source",
+        "predicted_round1",
+        "actual_round1",
+        "abs_error_round1",
+        "predicted_round2",
+        "actual_round2",
+        "abs_error_round2",
+        "predicted_round3",
+        "actual_round3",
+        "abs_error_round3",
+        "predicted_round4",
+        "actual_round4",
+        "abs_error_round4",
+        "predicted_total_through_round2",
+        "actual_total_through_round2",
+        "abs_error_total_through_round2",
+        "predicted_total_through_round3",
+        "actual_total_through_round3",
+        "abs_error_total_through_round3",
+        "predicted_total",
+        "actual_total",
+        "abs_error_total",
+        "cut_rule_top_n",
+        "cut_rule_ties",
+        "cut_rule_within_leader_strokes",
+        "leader_score_r2",
+        "cut_line",
+        "made_cut_predicted",
+    ]
+
+    return pd.DataFrame(columns=output_columns)
 
 
 def build_pre_tournament_feature_rows(
@@ -216,6 +412,9 @@ def build_pre_tournament_feature_rows(
             "round4": "actual_round4",
         }
     )
+
+    for actual_col in ["actual_round1", "actual_round2", "actual_round3", "actual_round4"]:
+        field_meta[actual_col] = pd.to_numeric(field_meta[actual_col], errors="coerce")
 
     inference_df = field_meta.merge(inference_df, on="player_name_clean", how="left")
 
@@ -311,6 +510,7 @@ def predict_round1(
         round_name="round1",
         apply_calibration=apply_calibration,
     )
+
     predictions["abs_error_round1"] = (
         predictions["predicted_round1"] - predictions["actual_round1"]
     ).abs()
@@ -323,6 +523,7 @@ def predict_round1(
 
     actual_rank_df = (
         predictions[["player_name_clean", "actual_round1"]]
+        .dropna(subset=["actual_round1"])
         .sort_values(["actual_round1", "player_name_clean"], ascending=[True, True])
         .reset_index(drop=True)
     )
@@ -378,6 +579,7 @@ def predict_round2(
 
         actual_rank_df = (
             predictions[["player_name_clean", "actual_total_through_round2"]]
+            .dropna(subset=["actual_total_through_round2"])
             .sort_values(
                 ["actual_total_through_round2", "player_name_clean"],
                 ascending=[True, True],
@@ -654,8 +856,16 @@ def main() -> None:
     print("Loading historical features...")
     df = load_features()
 
-    print(f"Selecting field for: {TARGET_TOURNAMENT} ({TARGET_START_DATE})")
-    field_df = get_target_field(df, TARGET_TOURNAMENT, TARGET_START_DATE)
+    print(
+        f"Selecting field for: {TARGET_TOURNAMENT} ({TARGET_START_DATE}) "
+        f"using FIELD_SOURCE='{FIELD_SOURCE}'"
+    )
+    field_df = get_target_field_for_source(
+        historical_df=df,
+        tournament=TARGET_TOURNAMENT,
+        start_date=TARGET_START_DATE,
+        field_source=FIELD_SOURCE,
+    )
 
     print(f"Players in field: {len(field_df)}")
 
@@ -688,19 +898,26 @@ def main() -> None:
 
     prediction_output_df = build_prediction_output(prediction_mode_df)
 
-    print("Running Round 2 backtest predictions for evaluation artifact...")
-    backtest_mode_df = predict_round2(round2_model, predictions_df, mode="backtest")
+    if has_backtest_actuals(predictions_df):
+        print("Running Round 2 backtest predictions for evaluation artifact...")
+        backtest_mode_df = predict_round2(round2_model, predictions_df, mode="backtest")
 
-    print("Applying cut logic to backtest artifact...")
-    backtest_mode_df = apply_cut(backtest_mode_df, tournament_name=TARGET_TOURNAMENT)
+        print("Applying cut logic to backtest artifact...")
+        backtest_mode_df = apply_cut(backtest_mode_df, tournament_name=TARGET_TOURNAMENT)
 
-    print("Running Round 3 backtest predictions for evaluation artifact...")
-    backtest_mode_df = predict_round3(round3_model, backtest_mode_df, mode="backtest")
+        print("Running Round 3 backtest predictions for evaluation artifact...")
+        backtest_mode_df = predict_round3(round3_model, backtest_mode_df, mode="backtest")
 
-    print("Running Round 4 backtest predictions for evaluation artifact...")
-    backtest_mode_df = predict_round4(round4_model, backtest_mode_df, mode="backtest")
+        print("Running Round 4 backtest predictions for evaluation artifact...")
+        backtest_mode_df = predict_round4(round4_model, backtest_mode_df, mode="backtest")
 
-    backtest_output_df = build_backtest_output(backtest_mode_df)
+        backtest_output_df = build_backtest_output(backtest_mode_df)
+    else:
+        print(
+            "Skipping backtest artifact because the selected field source "
+            "does not contain actual round scores."
+        )
+        backtest_output_df = build_empty_backtest_output()
 
     print(f"Saving prediction artifact to: {PREDICTION_OUTPUT_PATH}")
     print(f"Saving backtest artifact to:   {BACKTEST_OUTPUT_PATH}")

@@ -4,6 +4,15 @@ import joblib
 import numpy as np
 import pandas as pd
 
+from pathlib import Path
+import sys
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from src.config import get_cut_rule
 from src.paths import (
     FEATURES_DIR,
@@ -39,6 +48,12 @@ ROUND1_FEATURE_COLUMNS = [
     "made_cut_rate_last_5",
     "form_index_last_3",
     "career_tournament_count",
+    "days_since_last_tournament",
+    "tournaments_last_30",
+    "tournaments_last_60",
+    "tournaments_last_90",
+    "made_cut_streak",
+    "missed_cut_streak",
     "round_std_last_5",
     "round_std_last_10",
     "score_range_last_5",

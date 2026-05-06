@@ -15,6 +15,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config import get_cut_rule
+from src.artifact_validation import (
+    validate_backtest_artifact,
+    validate_prediction_artifact,
+)
 from src.paths import (
     FEATURES_DIR,
     MODELS_DIR,
@@ -909,6 +913,9 @@ def build_backtest_output(predictions: pd.DataFrame) -> pd.DataFrame:
 
 
 def save_outputs(prediction_df: pd.DataFrame, backtest_df: pd.DataFrame) -> None:
+    validate_prediction_artifact(prediction_df)
+    validate_backtest_artifact(backtest_df)
+
     PREDICTIONS_DIR.mkdir(parents=True, exist_ok=True)
     prediction_df.to_parquet(PREDICTION_OUTPUT_PATH, index=False)
     backtest_df.to_parquet(BACKTEST_OUTPUT_PATH, index=False)

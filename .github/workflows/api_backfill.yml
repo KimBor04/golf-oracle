@@ -35,8 +35,9 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
-      RAPIDAPI_HOST: ${{ secrets.RAPIDAPI_HOST }}
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+      FREEWEBAPI_GOLF_API_KEY: ${{ secrets.RAPIDAPI_KEY }}
+      FREEWEBAPI_GOLF_API_HOST: ${{ secrets.RAPIDAPI_HOST }}
 
     steps:
       - name: Checkout repository
@@ -54,13 +55,13 @@ jobs:
 
       - name: Validate API secrets
         run: |
-          if [ -z "$RAPIDAPI_KEY" ]; then
-            echo "RAPIDAPI_KEY secret is missing."
+          if [ -z "$FREEWEBAPI_GOLF_API_KEY" ]; then
+            echo "FREEWEBAPI_GOLF_API_KEY secret is missing."
             exit 1
           fi
 
-          if [ -z "$RAPIDAPI_HOST" ]; then
-            echo "RAPIDAPI_HOST secret is missing."
+          if [ -z "$FREEWEBAPI_GOLF_API_HOST" ]; then
+            echo "FREEWEBAPI_GOLF_API_HOST secret is missing."
             exit 1
           fi
 

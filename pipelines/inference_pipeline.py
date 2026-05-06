@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import argparse
+import sys
+from pathlib import Path
+
 import joblib
 import numpy as np
 import pandas as pd
-
-from pathlib import Path
-import sys
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -40,6 +41,9 @@ INFERENCE_MODE = "live"  # allowed: "live", "backtest"
 # - "historical": use field from historical_features.parquet
 # - "api_fields": use field from features/api_fields_<year>.parquet
 FIELD_SOURCE = "historical"
+
+VALID_INFERENCE_MODES = {"live", "backtest"}
+VALID_FIELD_SOURCES = {"historical", "api_fields"}
 
 ROUND1_FEATURE_COLUMNS = [
     "season",
@@ -82,6 +86,55 @@ ROUND_CALIBRATION_ALPHA = {
 
 ROUND_SCORE_MIN = 55.0
 ROUND_SCORE_MAX = 95.0
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run Golf Oracle tournament inference and save prediction/backtest artifacts."
+        )
+    )
+
+    parser.add_argument(
+        "--target-tournament",
+        default=TARGET_TOURNAMENT,
+        help=(
+            "Tournament name to predict. "
+            f"Default: '{TARGET_TOURNAMENT}'."
+        ),
+    )
+    parser.add_argument(
+        "--target-start-date",
+        default=TARGET_START_DATE,
+        help=(
+            "Tournament start date in YYYY-MM-DD format. "
+            f"Default: '{TARGET_START_DATE}'."
+        ),
+    )
+    parser.add_argument(
+        "--inference-mode",
+        default=INFERENCE_MODE,
+        choices=sorted(VALID_INFERENCE_MODES),
+        help=(
+            "Prediction mode for the prediction artifact. "
+            "'live' uses predicted prior rounds. "
+            "'backtest' uses actual prior rounds where available. "
+            f"Default: '{INFERENCE_MODE}'."
+        ),
+    )
+    parser.add_argument(
+        "--field-source",
+        default=FIELD_SOURCE,
+        choices=sorted(VALID_FIELD_SOURCES),
+        help=(
+            "Source for the tournament field. "
+            "'historical' uses historical_features.parquet. "
+            "'api_fields' uses features/api_fields_<year>.parquet. "
+            f"Default: '{FIELD_SOURCE}'."
+        ),
+    )
+
+    return parser.parse_args(argv)
 
 
 def load_features() -> pd.DataFrame:
@@ -277,12 +330,22 @@ def get_target_field_from_api_fields(
     return field_df
 
 
+def validate_field_source(field_source: str) -> None:
+    if field_source not in VALID_FIELD_SOURCES:
+        raise ValueError(
+            f"Invalid FIELD_SOURCE='{field_source}'. "
+            f"Expected one of: {sorted(VALID_FIELD_SOURCES)}."
+        )
+
+
 def get_target_field_for_source(
     historical_df: pd.DataFrame,
     tournament: str,
     start_date: str,
     field_source: str,
 ) -> pd.DataFrame:
+    validate_field_source(field_source)
+
     if field_source == "historical":
         return get_target_field(
             df=historical_df,
@@ -302,7 +365,7 @@ def get_target_field_for_source(
 
     raise ValueError(
         f"Invalid FIELD_SOURCE='{field_source}'. "
-        "Expected one of: ['historical', 'api_fields']."
+        f"Expected one of: {sorted(VALID_FIELD_SOURCES)}."
     )
 
 
@@ -438,10 +501,9 @@ def build_pre_tournament_feature_rows(
 
 
 def validate_inference_mode(mode: str) -> None:
-    valid_modes = {"live", "backtest"}
-    if mode not in valid_modes:
+    if mode not in VALID_INFERENCE_MODES:
         raise ValueError(
-            f"Invalid inference mode: {mode}. Expected one of {sorted(valid_modes)}."
+            f"Invalid inference mode: {mode}. Expected one of {sorted(VALID_INFERENCE_MODES)}."
         )
 
 
@@ -852,25 +914,39 @@ def save_outputs(prediction_df: pd.DataFrame, backtest_df: pd.DataFrame) -> None
     backtest_df.to_parquet(BACKTEST_OUTPUT_PATH, index=False)
 
 
-def main() -> None:
+def main(
+    target_tournament: str = TARGET_TOURNAMENT,
+    target_start_date: str = TARGET_START_DATE,
+    inference_mode: str = INFERENCE_MODE,
+    field_source: str = FIELD_SOURCE,
+) -> None:
+    validate_inference_mode(inference_mode)
+    validate_field_source(field_source)
+
+    target_start = pd.to_datetime(target_start_date, errors="coerce")
+    if pd.isna(target_start):
+        raise ValueError(
+            f"Invalid target_start_date='{target_start_date}'. "
+            "Expected format: YYYY-MM-DD."
+        )
+
     print("Loading historical features...")
     df = load_features()
 
     print(
-        f"Selecting field for: {TARGET_TOURNAMENT} ({TARGET_START_DATE}) "
-        f"using FIELD_SOURCE='{FIELD_SOURCE}'"
+        f"Selecting field for: {target_tournament} ({target_start_date}) "
+        f"using FIELD_SOURCE='{field_source}'"
     )
     field_df = get_target_field_for_source(
         historical_df=df,
-        tournament=TARGET_TOURNAMENT,
-        start_date=TARGET_START_DATE,
-        field_source=FIELD_SOURCE,
+        tournament=target_tournament,
+        start_date=target_start_date,
+        field_source=field_source,
     )
 
     print(f"Players in field: {len(field_df)}")
 
     print("Building pre-tournament feature rows...")
-    target_start = pd.to_datetime(TARGET_START_DATE)
     inference_df = build_pre_tournament_feature_rows(df, field_df, target_start)
 
     print(f"Players with usable history: {len(inference_df)}")
@@ -884,17 +960,17 @@ def main() -> None:
     print("Running Round 1 predictions...")
     predictions_df = predict_round1(round1_model, inference_df)
 
-    print(f"Running Round 2 {INFERENCE_MODE} predictions for prediction artifact...")
-    prediction_mode_df = predict_round2(round2_model, predictions_df, mode=INFERENCE_MODE)
+    print(f"Running Round 2 {inference_mode} predictions for prediction artifact...")
+    prediction_mode_df = predict_round2(round2_model, predictions_df, mode=inference_mode)
 
     print("Applying cut logic to prediction artifact...")
-    prediction_mode_df = apply_cut(prediction_mode_df, tournament_name=TARGET_TOURNAMENT)
+    prediction_mode_df = apply_cut(prediction_mode_df, tournament_name=target_tournament)
 
-    print(f"Running Round 3 {INFERENCE_MODE} predictions for prediction artifact...")
-    prediction_mode_df = predict_round3(round3_model, prediction_mode_df, mode=INFERENCE_MODE)
+    print(f"Running Round 3 {inference_mode} predictions for prediction artifact...")
+    prediction_mode_df = predict_round3(round3_model, prediction_mode_df, mode=inference_mode)
 
-    print(f"Running Round 4 {INFERENCE_MODE} predictions for prediction artifact...")
-    prediction_mode_df = predict_round4(round4_model, prediction_mode_df, mode=INFERENCE_MODE)
+    print(f"Running Round 4 {inference_mode} predictions for prediction artifact...")
+    prediction_mode_df = predict_round4(round4_model, prediction_mode_df, mode=inference_mode)
 
     prediction_output_df = build_prediction_output(prediction_mode_df)
 
@@ -903,7 +979,7 @@ def main() -> None:
         backtest_mode_df = predict_round2(round2_model, predictions_df, mode="backtest")
 
         print("Applying cut logic to backtest artifact...")
-        backtest_mode_df = apply_cut(backtest_mode_df, tournament_name=TARGET_TOURNAMENT)
+        backtest_mode_df = apply_cut(backtest_mode_df, tournament_name=target_tournament)
 
         print("Running Round 3 backtest predictions for evaluation artifact...")
         backtest_mode_df = predict_round3(round3_model, backtest_mode_df, mode="backtest")
@@ -927,4 +1003,11 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    args = parse_args()
+
+    main(
+        target_tournament=args.target_tournament,
+        target_start_date=args.target_start_date,
+        inference_mode=args.inference_mode,
+        field_source=args.field_source,
+    )

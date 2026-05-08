@@ -33,6 +33,7 @@ ROUND3_MODEL_PATH = MODELS_DIR / "xgb_round3_baseline.joblib"
 ROUND4_MODEL_PATH = MODELS_DIR / "xgb_round4_baseline.joblib"
 
 FEATURES_PATH = FEATURES_DIR / "historical_features.parquet"
+LIVE_FEATURES_PATH = FEATURES_DIR / "live_features.parquet"
 
 PREDICTION_OUTPUT_PATH = LEADERBOARD_PREDICTIONS_PATH
 BACKTEST_OUTPUT_PATH = LEADERBOARD_BACKTEST_PATH
@@ -44,10 +45,11 @@ INFERENCE_MODE = "live"  # allowed: "live", "backtest"
 # Field source options:
 # - "historical": use field from historical_features.parquet
 # - "api_fields": use field from features/api_fields_<year>.parquet
+# - "live_features": use field from features/live_features.parquet
 FIELD_SOURCE = "historical"
 
 VALID_INFERENCE_MODES = {"live", "backtest"}
-VALID_FIELD_SOURCES = {"historical", "api_fields"}
+VALID_FIELD_SOURCES = {"historical", "api_fields", "live_features"}
 
 ROUND1_FEATURE_COLUMNS = [
     "season",
@@ -134,6 +136,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "Source for the tournament field. "
             "'historical' uses historical_features.parquet. "
             "'api_fields' uses features/api_fields_<year>.parquet. "
+            "'live_features' uses features/live_features.parquet. "
             f"Default: '{FIELD_SOURCE}'."
         ),
     )
@@ -243,34 +246,74 @@ def load_api_fields(year: int) -> pd.DataFrame:
 
     if not api_fields_path.exists():
         raise FileNotFoundError(
-            f"API fields file not found: {api_fields_path}\n"
-            "Run the FreeWebAPI field backfill first, for example:\n"
-            f"python pipelines/freewebapi_backfill.py --year {year} "
-            "--mode fields --next-events 3 --max-api-calls 3"
+            f"API fields file not found: {api_fields_path}. "
+            "Run the FreeWebAPI fields backfill first."
         )
 
-    df = pd.read_parquet(api_fields_path)
+    api_fields_df = pd.read_parquet(api_fields_path)
 
-    required_columns = {
-        "player_name_clean",
+    required_metadata_columns = {
         "target_tournament",
-        "tourn_id",
         "season",
-        "round_id",
+        "field_cache_status",
+        "api_record_type",
+        "api_start_date",
     }
-    missing = required_columns - set(df.columns)
-    if missing:
-        raise ValueError(f"Missing required columns in API fields file: {sorted(missing)}")
 
-    df = df.copy()
+    missing_metadata = required_metadata_columns - set(api_fields_df.columns)
+    if missing_metadata:
+        raise ValueError(
+            "Missing required columns in API fields file: "
+            f"{sorted(missing_metadata)}"
+        )
 
-    if "api_start_date" in df.columns:
-        df["api_start_date"] = pd.to_datetime(df["api_start_date"], errors="coerce")
+    api_fields_df = api_fields_df.copy()
+    api_fields_df["api_start_date"] = pd.to_datetime(
+        api_fields_df["api_start_date"],
+        errors="coerce",
+    )
 
-    if "api_end_date" in df.columns:
-        df["api_end_date"] = pd.to_datetime(df["api_end_date"], errors="coerce")
+    if "api_end_date" in api_fields_df.columns:
+        api_fields_df["api_end_date"] = pd.to_datetime(
+            api_fields_df["api_end_date"],
+            errors="coerce",
+        )
 
-    return df
+    if "player_name_clean" not in api_fields_df.columns:
+        if "player_name" in api_fields_df.columns:
+            api_fields_df["player_name_clean"] = (
+                api_fields_df["player_name"]
+                .astype(str)
+                .str.lower()
+                .str.strip()
+            )
+
+        elif {"firstname", "lastname"}.issubset(api_fields_df.columns):
+            api_fields_df["player_name_clean"] = (
+                api_fields_df["firstname"].fillna("").astype(str).str.strip()
+                + " "
+                + api_fields_df["lastname"].fillna("").astype(str).str.strip()
+            ).str.lower().str.strip()
+
+        elif {"first_name", "last_name"}.issubset(api_fields_df.columns):
+            api_fields_df["player_name_clean"] = (
+                api_fields_df["first_name"].fillna("").astype(str).str.strip()
+                + " "
+                + api_fields_df["last_name"].fillna("").astype(str).str.strip()
+            ).str.lower().str.strip()
+
+        elif "name" in api_fields_df.columns:
+            api_fields_df["player_name_clean"] = (
+                api_fields_df["name"]
+                .astype(str)
+                .str.lower()
+                .str.strip()
+            )
+
+        else:
+            api_fields_df["player_name_clean"] = pd.NA
+
+    return api_fields_df
 
 
 def get_target_field_from_api_fields(
@@ -292,11 +335,46 @@ def get_target_field_from_api_fields(
     if "api_record_type" in field_df.columns:
         field_df = field_df[field_df["api_record_type"] == "future_field"].copy()
 
+    if field_df.empty:
+        available = (
+            api_fields_df[
+                [
+                    "target_tournament",
+                    "season",
+                    "api_start_date",
+                    "field_cache_status",
+                ]
+            ]
+            .drop_duplicates()
+            .sort_values(["season", "api_start_date", "target_tournament"])
+        )
+        raise ValueError(
+            f"No API field rows found for tournament='{tournament}' and start='{start_date}'.\n"
+            f"Available API field records:\n{available.to_string(index=False)}"
+        )
+
     if "field_cache_status" in field_df.columns:
         available_rows = field_df[field_df["field_cache_status"] == "available"].copy()
 
-        if not available_rows.empty:
-            field_df = available_rows
+        if available_rows.empty:
+            status_summary = (
+                field_df[
+                    [
+                        "target_tournament",
+                        "api_start_date",
+                        "field_cache_status",
+                    ]
+                ]
+                .drop_duplicates()
+                .to_string(index=False)
+            )
+            raise ValueError(
+                "API field artifact exists, but the requested tournament field is not available.\n"
+                f"Requested tournament='{tournament}', start='{start_date}'.\n"
+                f"Field status:\n{status_summary}"
+            )
+
+        field_df = available_rows
 
     field_df = field_df[
         field_df["player_name_clean"].notna()
@@ -304,14 +382,23 @@ def get_target_field_from_api_fields(
     ].copy()
 
     if field_df.empty:
-        available = (
-            api_fields_df[["target_tournament", "season"]]
+        status_summary = (
+            api_fields_df[
+                [
+                    "target_tournament",
+                    "season",
+                    "api_start_date",
+                    "field_cache_status",
+                ]
+            ]
             .drop_duplicates()
-            .sort_values(["season", "target_tournament"])
+            .sort_values(["season", "api_start_date", "target_tournament"])
+            .to_string(index=False)
         )
         raise ValueError(
-            f"No API field rows found for tournament='{tournament}' and start='{start_date}'.\n"
-            f"Available API field tournaments:\n{available.to_string(index=False)}"
+            "API field artifact exists, but it contains no player rows for inference.\n"
+            "This usually means the API returned only field status metadata.\n"
+            f"Available API field records:\n{status_summary}"
         )
 
     field_df = field_df.sort_values(["player_name_clean"]).drop_duplicates(
@@ -319,17 +406,110 @@ def get_target_field_from_api_fields(
         keep="first",
     )
 
-    # Convert API field rows into the same shape expected by
-    # build_pre_tournament_feature_rows().
     field_df["tournament"] = field_df["target_tournament"]
     field_df["start"] = target_start
     field_df["season"] = target_year
 
-    # API field rows do not contain actual round scores yet.
-    # These are set to NA so prediction artifacts can still be built safely.
     for round_col in ["round1", "round2", "round3", "round4"]:
         if round_col not in field_df.columns:
             field_df[round_col] = pd.NA
+
+    return field_df
+
+
+def load_live_features() -> pd.DataFrame:
+    if not LIVE_FEATURES_PATH.exists():
+        raise FileNotFoundError(
+            f"Live features file not found: {LIVE_FEATURES_PATH}. "
+            "Run the feature pipeline with --fetch-live first."
+        )
+
+    live_df = pd.read_parquet(LIVE_FEATURES_PATH)
+
+    required_columns = {
+        "target_tournament",
+        "season",
+        "round_id",
+        "player_name_clean",
+    }
+    missing = required_columns - set(live_df.columns)
+
+    if missing:
+        raise ValueError(
+            f"Missing required columns in live features file: {sorted(missing)}"
+        )
+
+    live_df = live_df.copy()
+
+    live_df["season"] = pd.to_numeric(live_df["season"], errors="coerce")
+    live_df["round_id"] = pd.to_numeric(live_df["round_id"], errors="coerce")
+
+    live_df = live_df[
+        live_df["player_name_clean"].notna()
+        & (live_df["player_name_clean"].astype(str).str.strip() != "")
+    ].copy()
+
+    if live_df.empty:
+        raise ValueError(
+            "Live features file exists, but it contains no usable player rows."
+        )
+
+    return live_df
+
+
+def get_target_field_from_live_features(
+    live_df: pd.DataFrame,
+    tournament: str,
+    start_date: str,
+) -> pd.DataFrame:
+    target_start = pd.to_datetime(start_date)
+    target_year = int(target_start.year)
+
+    field_df = live_df.copy()
+
+    field_df = field_df[field_df["season"].astype(int) == target_year].copy()
+    field_df = field_df[field_df["target_tournament"] == tournament].copy()
+
+    if field_df.empty:
+        available = (
+            live_df[["target_tournament", "season", "round_id"]]
+            .drop_duplicates()
+            .sort_values(["season", "target_tournament", "round_id"])
+        )
+        raise ValueError(
+            f"No live feature rows found for tournament='{tournament}' and season='{target_year}'.\n"
+            f"Available live feature records:\n{available.to_string(index=False)}"
+        )
+
+    field_df = field_df[
+        field_df["player_name_clean"].notna()
+        & (field_df["player_name_clean"].astype(str).str.strip() != "")
+    ].copy()
+
+    if field_df.empty:
+        raise ValueError(
+            "Live features artifact exists for the requested tournament, "
+            "but it contains no usable player names."
+        )
+
+    field_df = field_df.sort_values(["player_name_clean"]).drop_duplicates(
+        subset=["player_name_clean"],
+        keep="first",
+    )
+
+    # Convert live leaderboard rows into the same field shape expected by
+    # build_pre_tournament_feature_rows().
+    #
+    # Important:
+    # For now, live_features is used only as a player-field source.
+    # We do not inject completed live round scores into actual_round columns yet.
+    # That keeps the inference path leakage-safe and avoids mixing partial rounds.
+    field_df["tournament"] = field_df["target_tournament"]
+    field_df["start"] = target_start
+    field_df["season"] = target_year
+
+    for round_col in ["round1", "round2", "round3", "round4"]:
+        field_df[round_col] = pd.NA
 
     return field_df
 
@@ -363,6 +543,15 @@ def get_target_field_for_source(
 
         return get_target_field_from_api_fields(
             api_fields_df=api_fields_df,
+            tournament=tournament,
+            start_date=start_date,
+        )
+
+    if field_source == "live_features":
+        live_df = load_live_features()
+
+        return get_target_field_from_live_features(
+            live_df=live_df,
             tournament=tournament,
             start_date=start_date,
         )

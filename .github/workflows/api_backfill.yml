@@ -22,6 +22,47 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Resolve backfill configuration
+        run: |
+          if [ "${{ github.event.schedule }}" = "0 6 * * *" ]; then
+            echo "BACKFILL_YEAR=2026" >> "$GITHUB_ENV"
+            echo "BACKFILL_MODE=fields" >> "$GITHUB_ENV"
+            echo "BACKFILL_MAX_API_CALLS=2" >> "$GITHUB_ENV"
+            echo "BACKFILL_NEXT_EVENTS=3" >> "$GITHUB_ENV"
+            echo "BACKFILL_FIELD_LOOKAHEAD_DAYS=7" >> "$GITHUB_ENV"
+            echo "BACKFILL_DESCRIPTION=Fetches near-future tournament fields for 2026" >> "$GITHUB_ENV"
+          elif [ "${{ github.event.schedule }}" = "0 7 * * *" ]; then
+            echo "BACKFILL_YEAR=2026" >> "$GITHUB_ENV"
+            echo "BACKFILL_MODE=results" >> "$GITHUB_ENV"
+            echo "BACKFILL_MAX_API_CALLS=8" >> "$GITHUB_ENV"
+            echo "BACKFILL_NEXT_EVENTS=3" >> "$GITHUB_ENV"
+            echo "BACKFILL_FIELD_LOOKAHEAD_DAYS=7" >> "$GITHUB_ENV"
+            echo "BACKFILL_DESCRIPTION=Fetches completed tournament results for 2026" >> "$GITHUB_ENV"
+          else
+            echo "Unknown schedule: ${{ github.event.schedule }}"
+            exit 1
+          fi
+
+      - name: Restore previous API cache and artifacts
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            features/api_cache/
+            features/api_schedule_*.parquet
+            features/api_target_tournaments_*.parquet
+            features/api_results_*.parquet
+            features/api_fields_*.parquet
+            features/live_features.parquet
+          key: api-backfill-${{ runner.os }}-${{ env.BACKFILL_YEAR }}-${{ env.BACKFILL_MODE }}-${{ github.run_id }}
+          restore-keys: |
+            api-backfill-${{ runner.os }}-${{ env.BACKFILL_YEAR }}-
+            api-backfill-${{ runner.os }}-
+
+      - name: Show restored API artifacts
+        run: |
+          echo "Restored API artifacts before backfill:"
+          find features -maxdepth 2 -type f | sort || true
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -44,27 +85,9 @@ jobs:
             exit 1
           fi
 
-      - name: Resolve backfill configuration
-        run: |
-          if [ "${{ github.event.schedule }}" = "0 6 * * *" ]; then
-            echo "BACKFILL_YEAR=2026" >> "$GITHUB_ENV"
-            echo "BACKFILL_MODE=fields" >> "$GITHUB_ENV"
-            echo "BACKFILL_MAX_API_CALLS=2" >> "$GITHUB_ENV"
-            echo "BACKFILL_NEXT_EVENTS=3" >> "$GITHUB_ENV"
-            echo "BACKFILL_FIELD_LOOKAHEAD_DAYS=7" >> "$GITHUB_ENV"
-          elif [ "${{ github.event.schedule }}" = "0 7 * * *" ]; then
-            echo "BACKFILL_YEAR=2026" >> "$GITHUB_ENV"
-            echo "BACKFILL_MODE=results" >> "$GITHUB_ENV"
-            echo "BACKFILL_MAX_API_CALLS=5" >> "$GITHUB_ENV"
-            echo "BACKFILL_NEXT_EVENTS=3" >> "$GITHUB_ENV"
-            echo "BACKFILL_FIELD_LOOKAHEAD_DAYS=7" >> "$GITHUB_ENV"
-          else
-            echo "Unknown schedule: ${{ github.event.schedule }}"
-            exit 1
-          fi
-
       - name: Show resolved backfill configuration
         run: |
+          echo "Description: $BACKFILL_DESCRIPTION"
           echo "Year: $BACKFILL_YEAR"
           echo "Mode: $BACKFILL_MODE"
           echo "Max API calls: $BACKFILL_MAX_API_CALLS"
@@ -91,8 +114,21 @@ jobs:
 
       - name: Show generated API artifacts
         run: |
-          echo "Generated feature artifacts:"
+          echo "Generated API artifacts after backfill:"
           find features -maxdepth 2 -type f | sort || true
+
+      - name: Save updated API cache and artifacts
+        if: ${{ success() }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            features/api_cache/
+            features/api_schedule_*.parquet
+            features/api_target_tournaments_*.parquet
+            features/api_results_*.parquet
+            features/api_fields_*.parquet
+            features/live_features.parquet
+          key: api-backfill-${{ runner.os }}-${{ env.BACKFILL_YEAR }}-${{ env.BACKFILL_MODE }}-${{ github.run_id }}
 
       - name: Upload API backfill artifacts
         uses: actions/upload-artifact@v4

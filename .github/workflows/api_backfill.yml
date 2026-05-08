@@ -95,3 +95,17 @@ jobs:
         run: |
           echo "Generated feature artifacts:"
           find features -maxdepth 2 -type f | sort || true
+
+      - name: Upload API backfill artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-backfill-${{ github.event.inputs.mode }}-${{ github.event.inputs.year }}-${{ github.run_id }}
+          path: |
+            features/api_schedule_*.parquet
+            features/api_target_tournaments_*.parquet
+            features/api_results_*.parquet
+            features/api_fields_*.parquet
+            features/live_features.parquet
+            features/api_cache/
+          if-no-files-found: warn
+          retention-days: 14

@@ -238,7 +238,7 @@ def test_classify_field_cache_status() -> None:
     assert backfill.classify_field_cache_status(available_field) == "available"
 
 
-def test_load_existing_field_statuses_reads_latest_status(
+def test_load_existing_field_statuses_prefers_available_status(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -251,7 +251,7 @@ def test_load_existing_field_statuses_reads_latest_status(
             "season": [2026, 2026, 2026],
             "round_id": [1, 1, 1],
             "playerid": ["a", "b", "c"],
-            "field_cache_status": ["incomplete", "available", "failed"],
+            "field_cache_status": ["failed", "available", "failed"],
         }
     )
     fields_df.to_parquet(fields_path, index=False)
@@ -310,6 +310,139 @@ def test_fetch_next_fields_skips_available_field_without_api_call(
     assert budget.used_calls == 0
     assert len(result) == 1
     assert result.loc[0, "field_cache_status"] == "available"
+
+
+# ──────────────────────────────────────────────
+# API field artifact merge logic
+# ──────────────────────────────────────────────
+
+
+def test_merge_api_field_artifacts_keeps_available_rows_when_new_attempt_failed() -> None:
+    existing_df = pd.DataFrame(
+        {
+            "target_tournament": ["Cadillac Championship", "Cadillac Championship"],
+            "target_tournament_clean": ["cadillac championship", "cadillac championship"],
+            "tourn_id": ["999", "999"],
+            "season": [2026, 2026],
+            "round_id": [1, 1],
+            "field_cache_status": ["available", "available"],
+            "api_record_type": ["future_field", "future_field"],
+            "api_start_date": pd.to_datetime(["2026-04-30", "2026-04-30"]),
+            "api_end_date": pd.to_datetime(["2026-05-03", "2026-05-03"]),
+            "player_name_clean": ["alice", "bob"],
+        }
+    )
+
+    new_df = pd.DataFrame(
+        {
+            "target_tournament": ["Cadillac Championship"],
+            "target_tournament_clean": ["cadillac championship"],
+            "tourn_id": ["999"],
+            "season": [2026],
+            "round_id": [1],
+            "field_cache_status": ["failed"],
+            "api_record_type": ["future_field"],
+            "api_start_date": pd.to_datetime(["2026-04-30"]),
+            "api_end_date": pd.to_datetime(["2026-05-03"]),
+        }
+    )
+
+    merged_df = backfill.merge_api_field_artifacts(
+        existing_df=existing_df,
+        new_df=new_df,
+    )
+
+    assert len(merged_df) == 2
+    assert set(merged_df["player_name_clean"]) == {"alice", "bob"}
+    assert set(merged_df["field_cache_status"]) == {"available"}
+
+
+def test_merge_api_field_artifacts_keeps_failed_placeholder_for_new_tournament() -> None:
+    existing_df = pd.DataFrame(
+        {
+            "target_tournament": ["Cadillac Championship"],
+            "target_tournament_clean": ["cadillac championship"],
+            "tourn_id": ["999"],
+            "season": [2026],
+            "round_id": [1],
+            "field_cache_status": ["available"],
+            "api_record_type": ["future_field"],
+            "api_start_date": pd.to_datetime(["2026-04-30"]),
+            "api_end_date": pd.to_datetime(["2026-05-03"]),
+            "player_name_clean": ["alice"],
+        }
+    )
+
+    new_df = pd.DataFrame(
+        {
+            "target_tournament": ["PGA Championship"],
+            "target_tournament_clean": ["pga championship"],
+            "tourn_id": ["033"],
+            "season": [2026],
+            "round_id": [1],
+            "field_cache_status": ["failed"],
+            "api_record_type": ["future_field"],
+            "api_start_date": pd.to_datetime(["2026-05-14"]),
+            "api_end_date": pd.to_datetime(["2026-05-17"]),
+        }
+    )
+
+    merged_df = backfill.merge_api_field_artifacts(
+        existing_df=existing_df,
+        new_df=new_df,
+    )
+
+    assert len(merged_df) == 2
+    assert set(merged_df["target_tournament"]) == {
+        "Cadillac Championship",
+        "PGA Championship",
+    }
+
+    pga_row = merged_df[merged_df["target_tournament"] == "PGA Championship"].iloc[0]
+    assert pga_row["field_cache_status"] == "failed"
+
+
+def test_merge_api_field_artifacts_prefers_available_duplicate_player_row() -> None:
+    existing_df = pd.DataFrame(
+        {
+            "target_tournament": ["Test Event"],
+            "target_tournament_clean": ["test event"],
+            "tourn_id": ["123"],
+            "season": [2026],
+            "round_id": [1],
+            "field_cache_status": ["failed"],
+            "api_record_type": ["future_field"],
+            "api_start_date": pd.to_datetime(["2026-06-01"]),
+            "api_end_date": pd.to_datetime(["2026-06-04"]),
+            "player_name_clean": ["alice"],
+            "playerid": ["p1"],
+        }
+    )
+
+    new_df = pd.DataFrame(
+        {
+            "target_tournament": ["Test Event"],
+            "target_tournament_clean": ["test event"],
+            "tourn_id": ["123"],
+            "season": [2026],
+            "round_id": [1],
+            "field_cache_status": ["available"],
+            "api_record_type": ["future_field"],
+            "api_start_date": pd.to_datetime(["2026-06-01"]),
+            "api_end_date": pd.to_datetime(["2026-06-04"]),
+            "player_name_clean": ["alice"],
+            "playerid": ["p1"],
+        }
+    )
+
+    merged_df = backfill.merge_api_field_artifacts(
+        existing_df=existing_df,
+        new_df=new_df,
+    )
+
+    assert len(merged_df) == 1
+    assert merged_df.loc[0, "player_name_clean"] == "alice"
+    assert merged_df.loc[0, "field_cache_status"] == "available"
 
 
 # ──────────────────────────────────────────────

@@ -361,6 +361,149 @@ def concat_and_dedupe(
     return combined.reset_index(drop=True)
 
 
+def merge_api_field_artifacts(
+    existing_df: pd.DataFrame,
+    new_df: pd.DataFrame,
+) -> pd.DataFrame:
+    """
+    Safely merge existing and newly fetched API field artifacts.
+
+    This prevents a failed placeholder row from overwriting an older useful
+    available player field for the same tournament.
+    """
+
+    if existing_df.empty:
+        return new_df.copy().reset_index(drop=True)
+
+    if new_df.empty:
+        return existing_df.copy().reset_index(drop=True)
+
+    merged_df = pd.concat([existing_df, new_df], ignore_index=True, sort=False)
+
+    if merged_df.empty:
+        return merged_df.reset_index(drop=True)
+
+    if "field_cache_status" not in merged_df.columns:
+        merged_df["field_cache_status"] = "unknown"
+
+    if "api_record_type" not in merged_df.columns:
+        merged_df["api_record_type"] = "future_field"
+
+    if "player_name_clean" not in merged_df.columns:
+        merged_df["player_name_clean"] = pd.NA
+
+    for date_col in ["api_start_date", "api_end_date"]:
+        if date_col in merged_df.columns:
+            merged_df[date_col] = pd.to_datetime(
+                merged_df[date_col],
+                errors="coerce",
+            )
+
+    status_priority = {
+        "available": 0,
+        "incomplete": 1,
+        "not_available_yet": 2,
+        "failed": 3,
+        "unknown": 4,
+    }
+
+    merged_df["_status_priority"] = (
+        merged_df["field_cache_status"]
+        .fillna("unknown")
+        .map(status_priority)
+        .fillna(9)
+        .astype(int)
+    )
+
+    has_player_name = (
+        merged_df["player_name_clean"].notna()
+        & (merged_df["player_name_clean"].astype(str).str.strip() != "")
+    )
+
+    player_rows = merged_df[has_player_name].copy()
+    placeholder_rows = merged_df[~has_player_name].copy()
+
+    player_dedupe_cols = [
+        col
+        for col in [
+            "target_tournament_clean",
+            "target_tournament",
+            "season",
+            "api_start_date",
+            "tourn_id",
+            "player_name_clean",
+        ]
+        if col in player_rows.columns
+    ]
+
+    if player_dedupe_cols:
+        player_rows = (
+            player_rows.sort_values("_status_priority")
+            .drop_duplicates(subset=player_dedupe_cols, keep="first")
+        )
+
+    field_key_cols = [
+        col
+        for col in [
+            "target_tournament_clean",
+            "target_tournament",
+            "season",
+            "api_start_date",
+            "tourn_id",
+        ]
+        if col in merged_df.columns
+    ]
+
+    if field_key_cols and not placeholder_rows.empty and not player_rows.empty:
+        available_player_rows = player_rows[
+            player_rows["field_cache_status"].eq("available")
+        ]
+
+        available_field_keys = {
+            tuple(row[col] for col in field_key_cols)
+            for _, row in available_player_rows.iterrows()
+        }
+
+        placeholder_rows["_field_key"] = placeholder_rows.apply(
+            lambda row: tuple(row[col] for col in field_key_cols),
+            axis=1,
+        )
+
+        placeholder_rows = placeholder_rows[
+            ~placeholder_rows["_field_key"].isin(available_field_keys)
+        ].drop(columns=["_field_key"])
+
+    if field_key_cols and not placeholder_rows.empty:
+        placeholder_rows = (
+            placeholder_rows.sort_values("_status_priority")
+            .drop_duplicates(subset=field_key_cols, keep="first")
+        )
+
+    output_df = pd.concat(
+        [player_rows, placeholder_rows],
+        ignore_index=True,
+        sort=False,
+    )
+
+    output_df = output_df.drop(columns=["_status_priority"], errors="ignore")
+
+    sort_cols = [
+        col
+        for col in [
+            "api_start_date",
+            "target_tournament",
+            "field_cache_status",
+            "player_name_clean",
+        ]
+        if col in output_df.columns
+    ]
+
+    if sort_cols:
+        output_df = output_df.sort_values(sort_cols, na_position="last")
+
+    return output_df.reset_index(drop=True)
+
+
 # ──────────────────────────────────────────────
 # Fetch schedule
 # ──────────────────────────────────────────────
@@ -673,10 +816,25 @@ def load_existing_field_statuses(year: int) -> dict[tuple[str, int], str]:
     if not required_cols.issubset(fields_df.columns):
         return {}
 
+    fields_df = fields_df.copy()
+    fields_df["_status_priority"] = (
+        fields_df["field_cache_status"]
+        .map(
+            {
+                "available": 0,
+                "incomplete": 1,
+                "not_available_yet": 2,
+                "failed": 3,
+            }
+        )
+        .fillna(9)
+    )
+
     status_df = (
-        fields_df[["tourn_id", "season", "field_cache_status"]]
+        fields_df[["tourn_id", "season", "field_cache_status", "_status_priority"]]
         .dropna(subset=["tourn_id", "season", "field_cache_status"])
-        .drop_duplicates(subset=["tourn_id", "season"], keep="last")
+        .sort_values("_status_priority")
+        .drop_duplicates(subset=["tourn_id", "season"], keep="first")
     )
 
     return {
@@ -834,10 +992,9 @@ def fetch_next_fields(
     output_path = api_fields_path(year)
     existing_fields_df = load_existing_parquet(output_path)
 
-    final_fields_df = concat_and_dedupe(
+    final_fields_df = merge_api_field_artifacts(
         existing_df=existing_fields_df,
         new_df=new_fields_df,
-        subset=["tourn_id", "season", "round_id", "playerid"],
     )
 
     final_fields_df.to_parquet(output_path, index=False)

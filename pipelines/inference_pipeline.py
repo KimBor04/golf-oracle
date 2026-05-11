@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 from pathlib import Path
 
@@ -20,6 +21,7 @@ from src.artifact_validation import (
     validate_prediction_artifact,
 )
 from src.paths import (
+    DATA_DIR,
     FEATURES_DIR,
     MODELS_DIR,
     PREDICTIONS_DIR,
@@ -34,6 +36,7 @@ ROUND4_MODEL_PATH = MODELS_DIR / "xgb_round4_baseline.joblib"
 
 FEATURES_PATH = FEATURES_DIR / "historical_features.parquet"
 LIVE_FEATURES_PATH = FEATURES_DIR / "live_features.parquet"
+MANUAL_FIELDS_DIR = DATA_DIR / "manual_fields"
 
 PREDICTION_OUTPUT_PATH = LEADERBOARD_PREDICTIONS_PATH
 BACKTEST_OUTPUT_PATH = LEADERBOARD_BACKTEST_PATH
@@ -45,11 +48,13 @@ INFERENCE_MODE = "live"  # allowed: "live", "backtest"
 # Field source options:
 # - "historical": use field from historical_features.parquet
 # - "api_fields": use field from features/api_fields_<year>.parquet
+#                 and automatically fall back to data/manual_fields/*.csv
+# - "manual_fields": use a local CSV field from data/manual_fields/
 # - "live_features": use field from features/live_features.parquet
 FIELD_SOURCE = "historical"
 
 VALID_INFERENCE_MODES = {"live", "backtest"}
-VALID_FIELD_SOURCES = {"historical", "api_fields", "live_features"}
+VALID_FIELD_SOURCES = {"historical", "api_fields", "manual_fields", "live_features"}
 
 ROUND1_FEATURE_COLUMNS = [
     "season",
@@ -135,7 +140,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=(
             "Source for the tournament field. "
             "'historical' uses historical_features.parquet. "
-            "'api_fields' uses features/api_fields_<year>.parquet. "
+            "'api_fields' uses features/api_fields_<year>.parquet and falls back "
+            "to data/manual_fields/*.csv if no usable API field exists. "
+            "'manual_fields' uses data/manual_fields/*.csv directly. "
             "'live_features' uses features/live_features.parquet. "
             f"Default: '{FIELD_SOURCE}'."
         ),
@@ -417,6 +424,135 @@ def get_target_field_from_api_fields(
     return field_df
 
 
+def slugify_tournament_name(tournament: str) -> str:
+    slug = tournament.lower().strip()
+    slug = re.sub(r"[^a-z0-9]+", "_", slug)
+    slug = re.sub(r"_+", "_", slug)
+    return slug.strip("_")
+
+
+def manual_field_path_for_tournament(tournament: str, year: int) -> Path:
+    slug = slugify_tournament_name(tournament)
+    return MANUAL_FIELDS_DIR / f"{slug}_{year}.csv"
+
+
+def load_manual_field(tournament: str, start_date: str) -> pd.DataFrame:
+    target_start = pd.to_datetime(start_date)
+    target_year = int(target_start.year)
+
+    manual_field_path = manual_field_path_for_tournament(
+        tournament=tournament,
+        year=target_year,
+    )
+
+    if not manual_field_path.exists():
+        raise FileNotFoundError(
+            f"Manual field file not found: {manual_field_path}.\n"
+            "Create a CSV in data/manual_fields/ with this naming pattern:\n"
+            f"{manual_field_path.name}\n"
+            "Required column: player_name or player_name_clean."
+        )
+
+    manual_df = pd.read_csv(manual_field_path)
+
+    if manual_df.empty:
+        raise ValueError(f"Manual field file is empty: {manual_field_path}")
+
+    manual_df = manual_df.copy()
+
+    if "player_name_clean" not in manual_df.columns:
+        if "player_name" not in manual_df.columns:
+            raise ValueError(
+                f"Manual field file must contain either 'player_name' or "
+                f"'player_name_clean': {manual_field_path}"
+            )
+
+        manual_df["player_name_clean"] = (
+            manual_df["player_name"]
+            .astype(str)
+            .str.lower()
+            .str.strip()
+        )
+
+    if "player_name" not in manual_df.columns:
+        manual_df["player_name"] = manual_df["player_name_clean"]
+
+    manual_df = manual_df[
+        manual_df["player_name_clean"].notna()
+        & (manual_df["player_name_clean"].astype(str).str.strip() != "")
+    ].copy()
+
+    if manual_df.empty:
+        raise ValueError(
+            f"Manual field file contains no usable player rows: {manual_field_path}"
+        )
+
+    manual_df["target_tournament"] = tournament
+    manual_df["target_tournament_clean"] = slugify_tournament_name(tournament).replace(
+        "_",
+        " ",
+    )
+    manual_df["season"] = target_year
+    manual_df["round_id"] = 1
+    manual_df["field_cache_status"] = "available"
+    manual_df["api_record_type"] = "manual_field"
+    manual_df["api_start_date"] = target_start
+    manual_df["api_end_date"] = pd.NaT
+
+    if "tourn_id" not in manual_df.columns:
+        manual_df["tourn_id"] = "manual"
+
+    return manual_df
+
+
+def get_target_field_from_manual_fields(
+    manual_df: pd.DataFrame,
+    tournament: str,
+    start_date: str,
+) -> pd.DataFrame:
+    target_start = pd.to_datetime(start_date)
+    target_year = int(target_start.year)
+
+    field_df = manual_df.copy()
+
+    if "season" in field_df.columns:
+        field_df = field_df[field_df["season"].astype(int) == target_year].copy()
+
+    if "target_tournament" in field_df.columns:
+        field_df = field_df[field_df["target_tournament"] == tournament].copy()
+
+    if field_df.empty:
+        raise ValueError(
+            f"No manual field rows found for tournament='{tournament}' "
+            f"and start='{start_date}'."
+        )
+
+    field_df = field_df[
+        field_df["player_name_clean"].notna()
+        & (field_df["player_name_clean"].astype(str).str.strip() != "")
+    ].copy()
+
+    if field_df.empty:
+        raise ValueError(
+            "Manual field artifact exists for the requested tournament, "
+            "but it contains no usable player names."
+        )
+
+    field_df = field_df.sort_values(["player_name_clean"]).drop_duplicates(
+        subset=["player_name_clean"],
+        keep="first",
+    )
+
+    field_df["tournament"] = tournament
+    field_df["start"] = target_start
+    field_df["season"] = target_year
+
+    for round_col in ["round1", "round2", "round3", "round4"]:
+        field_df[round_col] = pd.NA
+
+    return field_df
+
+
 def load_live_features() -> pd.DataFrame:
     if not LIVE_FEATURES_PATH.exists():
         raise FileNotFoundError(
@@ -539,10 +675,50 @@ def get_target_field_for_source(
 
     if field_source == "api_fields":
         target_year = int(pd.to_datetime(start_date).year)
-        api_fields_df = load_api_fields(year=target_year)
 
-        return get_target_field_from_api_fields(
-            api_fields_df=api_fields_df,
+        try:
+            api_fields_df = load_api_fields(year=target_year)
+
+            return get_target_field_from_api_fields(
+                api_fields_df=api_fields_df,
+                tournament=tournament,
+                start_date=start_date,
+            )
+        except (FileNotFoundError, ValueError) as api_error:
+            print(
+                "\nWarning: API field source is unavailable for this tournament."
+            )
+            print(str(api_error))
+            print(
+                "\nTrying manual field fallback from data/manual_fields/..."
+            )
+
+            try:
+                manual_df = load_manual_field(
+                    tournament=tournament,
+                    start_date=start_date,
+                )
+
+                return get_target_field_from_manual_fields(
+                    manual_df=manual_df,
+                    tournament=tournament,
+                    start_date=start_date,
+                )
+            except (FileNotFoundError, ValueError) as manual_error:
+                raise ValueError(
+                    "Could not build tournament field from API fields or manual fallback.\n"
+                    f"API field error:\n{api_error}\n\n"
+                    f"Manual field fallback error:\n{manual_error}"
+                ) from manual_error
+
+    if field_source == "manual_fields":
+        manual_df = load_manual_field(
+            tournament=tournament,
+            start_date=start_date,
+        )
+
+        return get_target_field_from_manual_fields(
+            manual_df=manual_df,
             tournament=tournament,
             start_date=start_date,
         )
